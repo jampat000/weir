@@ -129,6 +129,31 @@ public sealed class ProcessingRig : IAsyncDisposable
     }
 
     /// <summary>
+    /// Deluno hands over a single file that sits directly in the watched folder, with no release folder around it, as a
+    /// download client leaves one. Its pass stays under way, once a worker takes it, until <see cref="ReleasePass"/>.
+    /// </summary>
+    public async Task HandOffRootFileAsync(string handoffId, string fileName)
+    {
+        var source = Path.Combine(Watched, fileName);
+        await File.WriteAllBytesAsync(source, FakeMedia.Bytes(FakeMedia.Probe()));
+        _tools.SetFileRule(fileName, new FileRule { Probe = FakeMedia.Probe(), RemuxReleaseFile = ReleaseFileFor(fileName) });
+        await PostHandOffAsync(handoffId, source);
+    }
+
+    /// <summary>Deluno hands over the file it already handed over, which has not changed since: no file is written.</summary>
+    public Task HandOffRootFileAgainAsync(string handoffId, string fileName) => PostHandOffAsync(handoffId, Path.Combine(Watched, fileName));
+
+    /// <summary>Takes the file off Activity's list, as "Remove from the list" does.</summary>
+    public async Task ForgetAsync(string fileName)
+    {
+        var listed = await _admin.GetAsync($"{WeirClient.Api}/processing/files", ("path_contains", fileName));
+        Assert.True(listed.Status == HttpStatusCode.OK, listed.ToString());
+        var id = (long)listed.Fields["files"]!.AsArray().Single()!["id"]!;
+        var forgotten = await _admin.DeleteWithCsrfBodyAsync($"{WeirClient.Api}/processing/files/{id}");
+        Assert.True(forgotten.Status == HttpStatusCode.NoContent, forgotten.ToString());
+    }
+
+    /// <summary>
     /// Deluno hands over a release folder: the film, and an extra too small for the workflow's minimum size. The film's pass stays
     /// under way until <see cref="ReleasePass"/>, or, when <paramref name="failFirstPass"/> is set, fails the first time and
     /// succeeds at once after that.

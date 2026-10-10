@@ -46,7 +46,7 @@ A file held by another program is not a failure: the swap reports it as in use a
 
 ## Once per source
 
-A source file is cleaned once. A source is the file at a path with a size and a modification time; once a successful pass has cleaned it and written its copy (`files.processed_source_size` and `processed_source_mtime_ns`, with the `handbacks` row naming the copy), a repeat of the same source is never processed again. It settles as a skip with a reason, never a failure: `CleanedSources.FindAsync` is the one check, and every route that could queue or start a remux pass makes it:
+A source file is cleaned once. A source is the file at a path with a size and a modification time; once a successful pass has cleaned it and written its copy, the `handbacks` row (keyed by workflow and path) records the copy, the source it was cleaned from (`source_size` and `source_mtime_ns`) and what a media manager said about the copy. A repeat of the same source is never processed again, and that holds when the file's row in the list is gone: the check reads the hand-back row, not the file's row. It settles as a skip with a reason, never a failure: `CleanedSources.FindAsync` is the one check, and every route that could queue or start a remux pass makes it:
 
 - hand-off intake (`MediaManagerIntake.EnqueueRefineAsync`), for the same hand-off sent again and for another hand-off naming the same download;
 - a manual requeue, "Process again" and "Try again" (`RequeueStore`);
@@ -54,6 +54,8 @@ A source file is cleaned once. A source is the file at a path with a size and a 
 - the start of the pass itself (`RemuxPassHandler.SettleRepeatAsync`), before it claims anything, which catches a job queued by any other route or before the check existed. An operator's own track choice or pass-through-unchanged is different work and is not a repeat.
 
 The copy decides what the skip says: while it still exists the file is "Already done: cleaned on <date> into <output path>"; when it is gone because a media manager collected it (the `handbacks` row's outcome is `imported`) it is "Already imported: <manager> collected the cleaned copy on <date>". A copy that is gone with nobody saying why is not a repeat: there is nothing to hand over, so the file is processed again. A changed size or modification time, or a different path, is a new source and goes through.
+
+A repeat leaves the file's row saying so (`CleanedSources.SettleRowAsync`): a row the list lost is written again as done, and one made afresh for the repeat, which no pass will ever settle, stops waiting. A row that says a later attempt failed, was rejected or is held is not a repeat, so "Try again" still tries. A new copy is the only thing that starts a hand-back's story over; a repeat never writes one, so a manager's "imported" is never lost to a file being taken off the list and handed over again. A manager's answer for a hand-off is matched to the copies the hand-off covered (its recorded targets), whether or not each file still has a row (`HandoffLedgerStore.CoveredPathsAsync`).
 
 A skipped repeat of a hand-off is answered like any finished file: a normal `completed` report naming the same output path the first completion named. It carries no `disposition` and never reads as a failure, so the manager does not refuse a good release or search again. Activity records one grey "Skipped: already done" or "Skipped: already imported" line (`processing.file_skipped_repeat`, result `skipped`).
 

@@ -73,10 +73,13 @@ public sealed class HandbackStore
 
     /// <summary>
     /// A pass wrote <paramref name="outputPath"/> for the file at <paramref name="relativePath"/>: remember exactly what it
-    /// wrote. A new copy of the same file starts its story over. A copy Weir cannot measure is not recorded, so it can
-    /// never be removed.
+    /// wrote, and the size and modification time of the source it was cleaned from (<paramref name="sourceSizeBytes"/> and
+    /// <paramref name="sourceModifiedTimeNs"/>, both or neither), which is how a later hand-off of the same source is
+    /// recognised even once the file has left the list. A new copy of the same file starts its story over. A copy Weir cannot
+    /// measure is not recorded, so it can never be removed.
     /// </summary>
-    public async Task RecordWrittenAsync(UnitOfWork uow, long libraryId, string relativePath, string outputPath, DateTimeOffset now)
+    public async Task RecordWrittenAsync(
+        UnitOfWork uow, long libraryId, string relativePath, string outputPath, DateTimeOffset now, long? sourceSizeBytes = null, long? sourceModifiedTimeNs = null)
     {
         ArgumentNullException.ThrowIfNull(uow);
         if (string.IsNullOrWhiteSpace(outputPath) || !TryMeasure(outputPath, out var size, out var mtimeNs))
@@ -85,17 +88,20 @@ public sealed class HandbackStore
         }
 
         await uow.ExecuteAsync(
-            "INSERT INTO handbacks (library_id, relative_path, output_path, output_size, output_mtime_ns, written_at) " +
-            "VALUES ($library, $path, $output, $size, $mtime, $now) " +
+            "INSERT INTO handbacks (library_id, relative_path, output_path, output_size, output_mtime_ns, written_at, source_size, source_mtime_ns) " +
+            "VALUES ($library, $path, $output, $size, $mtime, $now, $source_size, $source_mtime) " +
             "ON CONFLICT (library_id, relative_path) DO UPDATE SET output_path = excluded.output_path, output_size = excluded.output_size, " +
-            "output_mtime_ns = excluded.output_mtime_ns, written_at = excluded.written_at, outcome = NULL, outcome_by = NULL, outcome_at = NULL, " +
+            "output_mtime_ns = excluded.output_mtime_ns, written_at = excluded.written_at, source_size = excluded.source_size, " +
+            "source_mtime_ns = excluded.source_mtime_ns, outcome = NULL, outcome_by = NULL, outcome_at = NULL, " +
             "imported_path = NULL, outcome_reason = NULL, released_at = NULL, settled_at = NULL, release_note = NULL, updated_at = CURRENT_TIMESTAMP",
             ("$library", libraryId),
             ("$path", relativePath),
             ("$output", outputPath),
             ("$size", size),
             ("$mtime", mtimeNs),
-            ("$now", TimestampColumns.Orm(now))).ConfigureAwait(false);
+            ("$now", TimestampColumns.Orm(now)),
+            ("$source_size", sourceSizeBytes),
+            ("$source_mtime", sourceSizeBytes is null ? null : sourceModifiedTimeNs)).ConfigureAwait(false);
     }
 
     /// <summary>A file's size and modification time (ns since the Unix epoch, as <c>SourceFiles.Fingerprint</c> measures it).</summary>

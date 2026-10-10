@@ -159,14 +159,29 @@ internal sealed class WatchedFolderScanRun
     private async Task<bool> NoPassOwnsAsync(string rel) =>
         !await ActiveRemuxPasses.ExistsForRelativePathAsync(_reads, rel, _scan.MediaScope, _scan.Library.Id).ConfigureAwait(false);
 
+    /// <summary>The row this scan just made for a file Weir already cleaned says so, instead of waiting for a pass that will not come.</summary>
+    private Task SettleRowAsync(string rel, CleanedEarlier cleaned) =>
+        WriteLockTurns.TakeAsync(
+            async () =>
+            {
+                var uow = await UnitOfWork.OpenAsync(_database, CancellationToken.None).ConfigureAwait(false);
+                await using (uow.ConfigureAwait(false))
+                {
+                    await CleanedSources.SettleRowAsync(uow, _scan.Library.Id, rel, cleaned, _scan.Now).ConfigureAwait(false);
+                    await uow.CommitAsync().ConfigureAwait(false);
+                }
+            },
+            CancellationToken.None);
+
     private async Task EnqueueAsync(WatchedFileDecision decision)
     {
         var rel = decision.RelativePath;
 
         // A source a pass already cleaned is never queued again. The scan's own rules recognise one for the libraries that keep
         // originals; this is the same last check every other route makes, for the rest. Silent: a scan would repeat the line.
-        if (await CleanedSources.FindAsync(_reads, _scan.Library.Id, _scan.Paths.WatchedFolder, rel).ConfigureAwait(false) is not null)
+        if (await CleanedSources.FindAsync(_reads, _scan.Library.Id, _scan.Paths.WatchedFolder, rel).ConfigureAwait(false) is { } cleaned)
         {
+            await SettleRowAsync(rel, cleaned).ConfigureAwait(false);
             return;
         }
 

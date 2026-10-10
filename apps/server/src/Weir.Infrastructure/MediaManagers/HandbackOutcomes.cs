@@ -101,9 +101,9 @@ public sealed class HandbackOutcomes
         if (row.LibraryId is { } libraryId)
         {
             var wasReported = await _targets.ReportedCopiesAsync(uow, row).ConfigureAwait(false);
-            foreach (var file in await HandoffLedgerStore.FileRowsAsync(uow, row).ConfigureAwait(false))
+            foreach (var path in await HandoffLedgerStore.CoveredPathsAsync(uow, row).ConfigureAwait(false))
             {
-                var copy = await _handback.FindAsync(uow, libraryId, file.RelativePath).ConfigureAwait(false);
+                var copy = await _handback.FindAsync(uow, libraryId, path).ConfigureAwait(false);
                 if (copy is null || !wasReported(copy))
                 {
                     continue;
@@ -180,9 +180,9 @@ public sealed class HandbackOutcomes
         }
 
         var wasReported = await _targets.ReportedCopiesAsync(uow, row).ConfigureAwait(false);
-        foreach (var file in await HandoffLedgerStore.FileRowsAsync(uow, row).ConfigureAwait(false))
+        foreach (var path in await HandoffLedgerStore.CoveredPathsAsync(uow, row).ConfigureAwait(false))
         {
-            if (await _handback.FindAsync(uow, libraryId, file.RelativePath).ConfigureAwait(false) is { Outcome: null } copy && wasReported(copy))
+            if (await _handback.FindAsync(uow, libraryId, path).ConfigureAwait(false) is { Outcome: null } copy && wasReported(copy))
             {
                 return true;
             }
@@ -226,9 +226,9 @@ public sealed class HandbackOutcomes
                     continue;
                 }
 
-                foreach (var file in await HandoffLedgerStore.FileRowsAsync(uow, handoff).ConfigureAwait(false))
+                foreach (var path in await HandoffLedgerStore.CoveredPathsAsync(uow, handoff).ConfigureAwait(false))
                 {
-                    if (await _handback.FindAsync(uow, libraryId, file.RelativePath).ConfigureAwait(false) is { } copy)
+                    if (await _handback.FindAsync(uow, libraryId, path).ConfigureAwait(false) is { } copy)
                     {
                         found.Add(copy);
                     }
