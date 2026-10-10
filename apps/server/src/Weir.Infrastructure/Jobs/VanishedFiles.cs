@@ -23,7 +23,8 @@ namespace Weir.Infrastructure.Jobs;
 /// is then forgotten, as Forget does, without saying so a second time. Any other row whose file is gone for that long is forgotten,
 /// with the one entry. No row is held or forgotten on a single look: every change waits for the second.</para>
 /// <para>A held row whose file is back is released to unprocessed, so a workflow whose files are never scanned (a manager hands them
-/// over) does not keep telling a file that is there that it is gone.</para>
+/// over) does not keep telling a file that is there that it is gone. A held row whose file has a pass booked to look at it again
+/// (<see cref="GoneLooks"/>) has that look started now instead, which processes the file.</para>
 /// <para>A file with a pass queued or running is left to that pass, and a path that is now a folder on disk is kept. A watched folder
 /// that cannot be read is never taken to mean its files left (<see cref="GoneSources.HasLeft"/>). Outcomes Weir reached (processed,
 /// passed through, rejected, skipped) stay as history. A row carrying the source Weir last cleaned is never forgotten, because it is
@@ -66,6 +67,7 @@ public static class VanishedFiles
         Forget,
         ForgetQuietly,
         Release,
+        StartLook,
     }
 
     private sealed record WaitingRow(
@@ -96,15 +98,15 @@ public static class VanishedFiles
         ArgumentNullException.ThrowIfNull(lookAgain);
         var cutoff = now - Grace;
         var (rows, queued) = await ReadAsync(database, libraryId, mediaScope, cancellationToken).ConfigureAwait(false);
+        Step Judge(WaitingRow row) => queued.Contains(row.RelativePath) ? DecideQueued(row, watchedRoot) : Decide(row, cutoff, watchedRoot);
         var pending = rows
-            .Where(row => !queued.Contains(row.RelativePath))
-            .Select(row => (Row: row, Step: Decide(row, cutoff, watchedRoot)))
+            .Select(row => (Row: row, Step: Judge(row)))
             .Where(item => item.Step != Step.None)
             .ToList();
         if (pending.Count > 0)
         {
             await lookAgain(cancellationToken).ConfigureAwait(false);
-            pending = [.. pending.Where(item => Decide(item.Row, cutoff, watchedRoot) == item.Step)];
+            pending = [.. pending.Where(item => Judge(item.Row) == item.Step)];
         }
 
         var held = new List<string>();
@@ -126,6 +128,9 @@ public static class VanishedFiles
                                     held.Add(row.RelativePath);
                                     break;
                                 case Step.Release when await ReleaseOneAsync(uow, mediaScope, libraryId, row).ConfigureAwait(false):
+                                    released.Add(row.RelativePath);
+                                    break;
+                                case Step.StartLook when await GoneLooks.StartForFileAsync(uow, row.RelativePath, mediaScope, libraryId).ConfigureAwait(false):
                                     released.Add(row.RelativePath);
                                     break;
                                 case Step.Forget or Step.ForgetQuietly
@@ -165,6 +170,10 @@ public static class VanishedFiles
 
         return !held && row.SeenByScan && HoldableStatuses.Contains(row.Status) ? Step.Hold : Step.None;
     }
+
+    /// <summary>What to do with a row whose file has a pass pending or leased: only a held row whose file is back, which starts the pass booked to look at it.</summary>
+    private static Step DecideQueued(WaitingRow row, string watchedRoot) =>
+        GoneSourceText.IsHeld(row.Status, row.Reason) && GoneSources.IsBack(watchedRoot, row.RelativePath) ? Step.StartLook : Step.None;
 
     /// <summary>The library's waiting rows, and the files that have a pass pending or leased, which are left to it.</summary>
     private static async Task<(List<WaitingRow> Rows, HashSet<string> Queued)> ReadAsync(

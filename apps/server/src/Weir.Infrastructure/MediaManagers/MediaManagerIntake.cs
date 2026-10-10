@@ -365,9 +365,16 @@ public sealed partial class MediaManagerIntake
             // Folder detection may already have queued (or started) this very file under its own random key. One file
             // gets one pass: the hand-off takes over that pass rather than adding a second one. A resend of this same
             // hand-off still lands on its own row through EnqueueOrGet below.
+            var active = library is null ? null : ActiveRemuxPasses.ForRelativePath(connection, transaction, target, library.MediaType, library.Id);
+            if (library is not null && active is not null && GoneSources.IsBack(library.WatchedFolder, target) && GoneLooks.StartIfWaiting(connection, transaction, active))
+            {
+                // A file that was gone and is here again: the pass waiting out the grace has nothing left to wait for.
+                _jobs.AnnounceQueueChange(transaction, active.JobKind);
+            }
+
             if (library is not null &&
-                ProcessingJobStore.GetByDedupeKey(connection, transaction, dedupeKey) is null &&
-                ActiveRemuxPasses.ForRelativePath(connection, transaction, target, library.MediaType, library.Id) is { } active)
+                active is not null &&
+                ProcessingJobStore.GetByDedupeKey(connection, transaction, dedupeKey) is null)
             {
                 if (AdoptActivePass(connection, transaction, active, importEvent, dedupeKey, payload))
                 {

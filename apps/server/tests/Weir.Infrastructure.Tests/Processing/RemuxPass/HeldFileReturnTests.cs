@@ -201,8 +201,8 @@ public sealed class HeldFileReturnTests : IDisposable
     private IReadOnlyList<WireObject> ReportsFor(string handoffId) =>
         [.. Reports().Where(report => WireConvert.Str(report["handoffId"]) == handoffId)];
 
-    private async Task<string> HandoffStateAsync(string handoffId) =>
-        (await _fixture.Db(async uow => await _fixture.Ledger.CurrentStatusAsync(uow, (await HandoffLedgerStore.FindAsync(uow, "deluno", handoffId))!))).State;
+    private async Task<HandoffStatus> HandoffStatusAsync(string handoffId) =>
+        await _fixture.Db(async uow => await _fixture.Ledger.CurrentStatusAsync(uow, (await HandoffLedgerStore.FindAsync(uow, "deluno", handoffId))!));
 
     /// <summary>The file was cleaned once, from the one file, and the hand-off was told it was completed with the copy.</summary>
     private async Task AssertCleanedAndToldAsync(string handoffId)
@@ -234,7 +234,7 @@ public sealed class HeldFileReturnTests : IDisposable
         await DrainAsync();
 
         await AssertCleanedAndToldAsync("first");
-        Assert.Equal("completed", await HandoffStateAsync("second"));
+        Assert.Equal("completed", (await HandoffStatusAsync("second")).State);
     }
 
     [Theory]

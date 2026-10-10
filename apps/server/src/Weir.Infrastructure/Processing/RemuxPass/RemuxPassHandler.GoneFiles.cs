@@ -5,8 +5,7 @@ namespace Weir.Infrastructure.Processing.RemuxPass;
 
 public sealed partial class RemuxPassHandler
 {
-    /// <summary>The payload and result key counting how many times a pass has found its file gone.</summary>
-    private const string GoneLooksKey = "gone_looks";
+    private const string GoneLooksKey = GoneLooks.Key;
 
     /// <summary>
     /// A pass that failed because its file was not there is looked at again after a few seconds, the way a hand-off is told a share
