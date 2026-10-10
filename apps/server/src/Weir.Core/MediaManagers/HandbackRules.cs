@@ -163,11 +163,13 @@ public static class HandbackRules
         "Weir's copy had already left the hand-back folder, so there was nothing to remove.";
 
     /// <summary>What the outcome endpoint says about a hand-off whose files Weir released, kept, or found gone.</summary>
-    public static string OutcomeMessage(string manager, string outcome, int removed, int gone, int kept, string? firstKeptNote)
+    public static string OutcomeMessage(string manager, string outcome, int removed, int gone, int kept, string? firstKeptNote, int alreadyImported = 0)
     {
         if (outcome == NotImported)
         {
-            return "Weir recorded that the file will not be imported, and kept its copy.";
+            return alreadyImported > 0 && kept == 0
+                ? $"Weir recorded that the file will not be imported. {manager} has already imported it from another hand-off, so Weir left what it recorded about the file as it is."
+                : "Weir recorded that the file will not be imported, and kept its copy.";
         }
 
         if (removed + gone + kept == 0)

@@ -100,6 +100,12 @@ public sealed class HandbackRulesTests
             "Weir recorded that Deluno imported the file and released its copy.",
             HandbackRules.OutcomeMessage("Deluno", HandbackRules.Imported, removed: 1, gone: 0, kept: 0, firstKeptNote: null));
         Assert.Equal(
+            "Weir recorded that the file will not be imported, and kept its copy.",
+            HandbackRules.OutcomeMessage("Deluno", HandbackRules.NotImported, removed: 0, gone: 0, kept: 1, firstKeptNote: null));
+        Assert.Equal(
+            "Weir recorded that the file will not be imported. Deluno has already imported it from another hand-off, so Weir left what it recorded about the file as it is.",
+            HandbackRules.OutcomeMessage("Deluno", HandbackRules.NotImported, removed: 0, gone: 0, kept: 0, firstKeptNote: null, alreadyImported: 1));
+        Assert.Equal(
             "Deluno had said it would not import this file, and then imported it after all. Weir recorded that Deluno imported the file and released its copy.",
             HandbackRules.AfterAllMessage("Deluno", "Weir recorded that Deluno imported the file and released its copy."));
         Assert.Equal(

@@ -85,8 +85,11 @@ public sealed class HandbackOutcomes
     /// that Weir's completion report actually named (<see cref="HandoffTargetStore.ReportedCopiesAsync"/>) — a file the
     /// hand-off covers but that never finished, or finished after the report went out, was never named to the manager, so
     /// its copy is left untouched. <c>imported</c> releases each named copy by the shared rule; <c>not-imported</c> keeps
-    /// every one. An <c>imported</c> that replaces an earlier <c>not-imported</c> (<see cref="HandbackRules.Supersedes"/>)
-    /// releases the copies that refusal kept by the same rule, and says in Activity that the manager imported it after all.
+    /// every one. Several hand-offs of one file share its copy, so what the copy says is only ever what the latest word on it
+    /// was: an <c>imported</c> releases a copy the same manager's <c>not-imported</c> kept, whichever hand-off that refusal was
+    /// for (and says in Activity that the manager imported it after all when it replaces its own refusal,
+    /// <see cref="HandbackRules.Supersedes"/>), and a <c>not-imported</c> never changes a copy the manager has imported. The
+    /// reply is built from what this outcome did to the copies it names, never from another outcome's note.
     /// </summary>
     public async Task<HandoffOutcomeResult> RecordHandoffOutcomeAsync(
         UnitOfWork uow, HandoffLedgerRow row, string manager, string outcome, DateTimeOffset occurredAt, string? importedPath, string? reason)
@@ -95,7 +98,7 @@ public sealed class HandbackOutcomes
         ArgumentNullException.ThrowIfNull(row);
         var now = _time.GetUtcNow();
         var afterAll = HandbackRules.Supersedes(row.Outcome, outcome);
-        int removed = 0, gone = 0, kept = 0;
+        int removed = 0, gone = 0, kept = 0, alreadyImported = 0;
         string? firstKeptNote = null;
         var named = new List<string>();
         if (row.LibraryId is { } libraryId)
@@ -110,10 +113,17 @@ public sealed class HandbackOutcomes
                 }
 
                 named.Add(copy.RelativePath);
+                if (outcome == HandbackRules.NotImported && copy.Outcome == HandbackRules.Imported)
+                {
+                    // Two hand-offs can name one copy. An import is never undone by a refusal, and the copy's note is not this one's.
+                    alreadyImported++;
+                    continue;
+                }
+
                 await _handback.RecordOutcomeAsync(uow, copy.Id, outcome, manager, occurredAt, importedPath, reason).ConfigureAwait(false);
                 // Already settled (Cleanup removed it, Sonarr's own webhook got there first): keep what happened then. The one
-                // settling an import after all undoes is this manager's own "will not import".
-                var settled = copy.SettledAt is not null && !(afterAll && KeptByRefusal(copy, manager));
+                // settling the manager's next word undoes is its own "will not import", whichever hand-off it was said for.
+                var settled = copy.SettledAt is not null && !KeptByRefusal(copy, manager);
                 HandbackRelease release;
                 if (settled)
                 {
@@ -157,7 +167,7 @@ public sealed class HandbackOutcomes
         }
 
         var released = outcome == HandbackRules.Imported && removed > 0 && kept == 0;
-        var message = HandbackRules.OutcomeMessage(manager, outcome, removed, gone, kept, firstKeptNote);
+        var message = HandbackRules.OutcomeMessage(manager, outcome, removed, gone, kept, firstKeptNote, alreadyImported);
         await _ledger.RecordManagerOutcomeAsync(uow, row.Id, outcome, occurredAt, message, released).ConfigureAwait(false);
         // A hand-off of one delivered file in a folder is about that file; the folder's name says nothing about which one it was.
         var subject = named.Count == 1 ? named[0] : row.RelativePath;
@@ -191,7 +201,7 @@ public sealed class HandbackOutcomes
         return false;
     }
 
-    /// <summary>The copy was kept by this manager's "will not import", the one settling an import after all undoes.</summary>
+    /// <summary>The copy was kept by this manager's "will not import", the one settling the manager's next word undoes.</summary>
     private static bool KeptByRefusal(HandbackRow copy, string manager) =>
         copy.Outcome == HandbackRules.NotImported && string.Equals(copy.OutcomeBy, manager, StringComparison.Ordinal);
 

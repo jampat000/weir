@@ -113,6 +113,25 @@ public sealed class ResentHandoffOutcomeTests
     }
 
     [Fact]
+    public async Task Each_sends_refusal_gives_the_copy_its_own_reason()
+    {
+        await using var rig = await Rig.StartAsync("Twice.Refused.2015.1080p.WEB-DL.x264-GOLDEN.mkv", "refused-first");
+        await rig.SendAsync("refused-first");
+        await rig.SendAsync("refused-second");
+
+        await rig.RefuseAsync("refused-first", "The first copy was removed from Transmission.");
+        var second = await rig.RefuseAsync("refused-second", "The second copy was removed from Deluge.");
+
+        Assert.Equal(NotImportedReply, second.Message);
+        Assert.True(File.Exists(rig.Copy));
+        var handback = (await rig.PanelAsync())["handback"]!;
+        Assert.Equal("The second copy was removed from Deluge.", (string)handback["outcome_reason"]!);
+        Assert.Equal(
+            "Deluno will not import this file: The second copy was removed from Deluge. Weir kept its copy in the hand-back folder.",
+            (string)handback["release_note"]!);
+    }
+
+    [Fact]
     public async Task A_refusal_of_the_first_send_after_the_import_of_the_second_changes_nothing()
     {
         await using var rig = await Rig.StartAsync("Late.Film.2017.1080p.WEB-DL.x264-GOLDEN.mkv", "late-first");
@@ -273,8 +292,8 @@ public sealed class ResentHandoffOutcomeTests
                 async () => (await _scenario.JobsAsync(Scenario.RemuxKind)).Any(job => (string)job["status"]! == "leased"),
                 "a pass to be under way");
 
-        public Task<OutcomeReply> RefuseAsync(string handoffId) =>
-            OutcomeAsync(handoffId, "not-imported", null, $"Deluno removed {_releaseName} from Transmission, so it will not import it.");
+        public Task<OutcomeReply> RefuseAsync(string handoffId, string? reason = null) =>
+            OutcomeAsync(handoffId, "not-imported", null, reason ?? $"Deluno removed {_releaseName} from Transmission, so it will not import it.");
 
         public Task<OutcomeReply> ImportAsync(string handoffId)
         {
