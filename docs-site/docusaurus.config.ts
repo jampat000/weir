@@ -118,7 +118,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Weir. Licensed under AGPL-3.0-or-later.`,
+      copyright: `Copyright (C) 2026 jampat000 and the Weir contributors. Licensed under AGPL-3.0-or-later.`,
     },
     prism: {
       theme: prismThemes.github,
