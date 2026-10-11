@@ -65,6 +65,7 @@ function Get-TrayLogText {
 function New-ScenarioAccount {
     $script:Ctx.Username = 'scenario-admin'
     $script:Ctx.Password = 'Sc-' + [guid]::NewGuid().ToString('N') + '-Aa1'
+    Register-Secret $script:Ctx.Password
 }
 
 function Sign-InScenarioAccount {
@@ -130,6 +131,7 @@ function Connect-StandInManager {
         kind = 'deluno'; base_url = "http://127.0.0.1:$($script:Ctx.StandInPort)"; api_key = 'scenario-stand-in-key'; enabled = $true }
     $script:Ctx.ConnectionId = $connection.id
     $script:Ctx.WebhookSecret = (Get-WeirJson $session "/api/v1/media-managers/connections/$($connection.id)/webhook-secret" -Method POST -Body @{}).webhook_secret
+    Register-Secret $script:Ctx.WebhookSecret
     Add-Evidence "connected Weir to the stand-in as connection $($connection.id) ($($connection.name))"
 }
 

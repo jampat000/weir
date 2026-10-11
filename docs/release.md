@@ -91,7 +91,7 @@ one VM round. It restores the clean checkpoint twice, once for each phase:
   -Version 1.0.0-rc.14 -CommitSha <the 40-character SHA that will be tagged>
 ```
 
-Add `-DelunoUrl http://<deluno>:7879 -DelunoApiKey <key>` to include the optional Deluno step, `-SourceFilm <path>` to hand
+`-DelunoUrl` (default `http://127.0.0.1:7879`, inside the VM) says where the optional Deluno step looks. No secret is ever passed on a command line or carried between sessions: that step mints its own API key inside the VM, through Deluno's local API, and records the step not-applicable with the exact reason if no Deluno answers there or Deluno already has an account. Add `-SourceFilm <path>` to hand
 over a real film (Big Buck Bunny, Creative Commons) instead of the one the run makes with Weir's own FFmpeg, and `-NoStatus` to
 keep the record without setting the status. `-WhatIf` lists the run and the scenarios and touches no machine. The previous
 release for the update phase is downloaded with `gh` (the newest published release older than `-Version`) unless
@@ -115,7 +115,7 @@ when Deluno is installed, and the request log for Deluno's `/api/integrations/pr
 | Fresh | A deleted file that was waiting | A file deleted while Weir waits for it to settle becomes "no longer there", never a failure, with no warning in the log. |
 | Fresh | The update buttons | Check for updates and Download update reach the real tray, which takes each flag and brings the update state to an answer. |
 | Fresh | The copy saved before an update | The tray's backup request makes the running server save a consistent copy under `backups\pre-update`, and System overview names it. |
-| Fresh | Workflows set up from Deluno (optional) | With a Deluno given, Weir's workflows are linked to it with its folders and the folder chain is ready. Recorded not-applicable, and said so, with none. |
+| Fresh | Workflows set up from Deluno (optional) | With a Deluno in the VM that has no account yet, the run creates a throwaway account there, mints an API key in the VM (never shown, logged or recorded), and Weir's workflows are linked to that Deluno with its folders and the folder chain ready. Recorded not-applicable, with the reason, when no Deluno answers or it already has an account. |
 | Fresh | Logs with no unexpected warnings | System > Logs, the server log and the tray log hold no warning or error the suite does not name as caused on purpose. |
 | Update | An update over the previous release | The previous release is installed and used, the build under test is installed over the running Weir, and Weir returns by itself on the new version with its account, workflow and Activity intact (and the pre-update copy when the database changed), then cleans a film. |
 

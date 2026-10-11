@@ -71,7 +71,7 @@ $ScenarioCatalog = @(
     [pscustomobject]@{
         Id = 'workflows-from-deluno'; Phase = 'Fresh'; Required = $false
         Title = 'Workflows set up from Deluno'
-        Does = 'When a Deluno address and API key are given, connects Weir to that Deluno and waits for Weir to set up its workflows from Deluno''s own libraries and folders. Recorded not-applicable, and says so, when no Deluno is given.'
+        Does = 'Finds the Deluno inside the machine (http://127.0.0.1:7879), gets an API key for it inside the machine by minting one through Deluno''s own local API, connects Weir to it, and waits for Weir to set up its workflows from Deluno''s own libraries and folders. No secret is passed in from outside and none is written down. Recorded not-applicable, with the exact reason, when no Deluno answers or Deluno already has an account (so no key can be minted without its password).'
         Passes = 'Weir''s workflows are linked to Deluno with its folders and the folder chain check shows every step ready, with nothing typed in Weir.'
     }
     [pscustomobject]@{

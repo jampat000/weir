@@ -37,10 +37,9 @@
     Where the record, the evidence and the logs are kept.
 
 .PARAMETER DelunoUrl
-    A Deluno that is really there, such as http://localhost:7879, for the optional "workflows set up from Deluno" scenario.
-
-.PARAMETER DelunoApiKey
-    That Deluno's API key.
+    The Deluno on this machine, for the optional "workflows set up from Deluno" scenario. The scenario gets its API key itself,
+    inside this machine (see Get-DelunoApiKey in Weir.Scenarios.Tray.ps1): no key is ever given to the run. A rehearsal looks for
+    no Deluno unless this is given.
 
 .PARAMETER SourceFilm
     A real film to use instead of making one, such as Big Buck Bunny (Creative Commons). Its tracks are not known, so the
@@ -61,8 +60,7 @@ param(
     [int] $Port = 9347,
     [string] $InstallRoot = (Join-Path $env:LOCALAPPDATA 'Weir'),
     [string] $RuntimeHome = (Join-Path $env:ProgramData 'Weir'),
-    [string] $DelunoUrl,
-    [string] $DelunoApiKey,
+    [string] $DelunoUrl = 'http://127.0.0.1:7879',
     [string] $SourceFilm,
     [string[]] $Only,
     [switch] $Plan,
@@ -133,8 +131,7 @@ $script:Ctx.InstallRoot = $InstallRoot
 $script:Ctx.RuntimeHome = $RuntimeHome
 $script:Ctx.MediaRoot = $MediaRoot
 $script:Ctx.RunFolder = $RunFolder
-$script:Ctx.DelunoUrl = $DelunoUrl
-$script:Ctx.DelunoApiKey = $DelunoApiKey
+$script:Ctx.DelunoUrl = if ($Rehearsal -and -not $PSBoundParameters.ContainsKey('DelunoUrl')) { '' } else { $DelunoUrl }
 $script:Ctx.SourceFilm = $SourceFilm
 $script:Ctx.ToolsFolder = $ToolsFolder
 $script:Ctx.Rehearsal = [bool]$Rehearsal
@@ -165,19 +162,19 @@ foreach ($entry in $phaseScenarios) {
         if ($detail -is [array]) { $detail = $detail[-1] }
         if ($null -ne $detail -and $detail.PSObject.Properties['NotApplicable']) {
             Add-ScenarioResult -Id $entry.Id -Status 'not-applicable' -Detail $detail.Detail -Seconds $clock.Elapsed.TotalSeconds
-            Write-Host "    not applicable: $($detail.Detail)" -ForegroundColor Yellow
+            Write-Host (Protect-Secrets "    not applicable: $($detail.Detail)") -ForegroundColor Yellow
             continue
         }
         Add-ScenarioResult -Id $entry.Id -Status 'passed' -Detail ([string]$detail) -Seconds $clock.Elapsed.TotalSeconds
-        Write-Host "    passed in $([int]$clock.Elapsed.TotalSeconds) s: $detail" -ForegroundColor Green
+        Write-Host (Protect-Secrets "    passed in $([int]$clock.Elapsed.TotalSeconds) s: $detail") -ForegroundColor Green
         Add-Evidence "PASSED: $detail"
     }
     catch {
         $message = $_.Exception.Message
         Add-ScenarioResult -Id $entry.Id -Status 'failed' -Detail $message -Seconds $clock.Elapsed.TotalSeconds
-        Write-Host "    FAILED: $message" -ForegroundColor Red
+        Write-Host (Protect-Secrets "    FAILED: $message") -ForegroundColor Red
         Add-Evidence "FAILED: $message"
-        Add-Evidence ($_.ScriptStackTrace)
+        Add-Evidence $_.ScriptStackTrace
     }
 }
 

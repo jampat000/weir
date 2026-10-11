@@ -44,10 +44,10 @@
     release older than -Version (found as release.yml finds it), and its sha256 is recorded.
 
 .PARAMETER DelunoUrl
-    Optional. A Deluno that is really there and reachable from the VM, for the "workflows set up from Deluno" scenario.
-
-.PARAMETER DelunoApiKey
-    That Deluno's API key.
+    The Deluno inside the VM that the "workflows set up from Deluno" scenario looks for. It defaults to http://127.0.0.1:7879. No
+    secret is passed to the VM or carried between sessions: the scenario gets its API key inside the VM session, by minting one
+    through Deluno's own local API (Deluno stores only a hash of its keys, so one cannot be read back). If no Deluno answers there,
+    or it already has an account, the scenario is recorded not-applicable with exactly that reason.
 
 .PARAMETER SourceFilm
     Optional. A real film (Big Buck Bunny, Creative Commons) to hand over instead of the film the run makes with Weir's FFmpeg.
@@ -71,8 +71,7 @@ param(
     [string] $RigCredentialFile = (Join-Path $env:LOCALAPPDATA 'Deluno-rig-admin.xml'),
     [string] $VmCredentialFile = (Join-Path $env:LOCALAPPDATA 'Deluno-goldenvm-admin.xml'),
     [string] $OutDirectory,
-    [string] $DelunoUrl,
-    [string] $DelunoApiKey,
+    [string] $DelunoUrl = 'http://127.0.0.1:7879',
     [string] $SourceFilm,
     [string] $EvidenceUrl,
     [int] $PhaseTimeoutMinutes = 60,
@@ -115,7 +114,6 @@ if ($WhatIfPreference) {
 if (-not (Test-Path -LiteralPath $InstallerPath)) { throw "Installer not found: $InstallerPath" }
 $InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
 if ($SourceFilm -and -not (Test-Path -LiteralPath $SourceFilm)) { throw "Film not found: $SourceFilm" }
-if ([bool]$DelunoUrl -ne [bool]$DelunoApiKey) { throw '-DelunoUrl and -DelunoApiKey go together.' }
 New-Item -ItemType Directory -Force -Path $runFolder | Out-Null
 
 # --- the previous release ----------------------------------------------------------------------------------------------
@@ -219,7 +217,7 @@ function Invoke-Phase([string] $Phase) {
 
     $arguments = @{ Phase = $Phase; SetupPath = 'C:\golden\weir\candidate\Weir-win-Setup.exe'; Version = $Version; ShortSha = $shortSha }
     if ($Phase -eq 'Update') { $arguments.PreviousSetupPath = 'C:\golden\weir\previous\Weir-win-Setup.exe' }
-    if ($DelunoUrl) { $arguments.DelunoUrl = $DelunoUrl; $arguments.DelunoApiKey = $DelunoApiKey }
+    $arguments.DelunoUrl = $DelunoUrl
     if ($SourceFilm) { $arguments.SourceFilm = Join-Path 'C:\golden\weir\film' (Split-Path $SourceFilm -Leaf) }
 
     $started = Invoke-InVm {

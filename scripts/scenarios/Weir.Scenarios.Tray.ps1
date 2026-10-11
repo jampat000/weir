@@ -116,12 +116,41 @@ function Scenario_pre_update_copy {
 
 # --- workflows-from-deluno ----------------------------------------------------------------------------------------------
 
+# Gets an API key for the Deluno on this machine without any secret from outside the VM. Deluno keeps only a hash of each key it
+# hands out (api_keys.key_hash in its platform database), so an existing key cannot be read back; the way to have one is to mint
+# it through Deluno's own local API (POST /api/api-keys, a Deluno account signed in). A Deluno with no account yet lets this
+# machine create one (POST /api/auth/bootstrap), with a password made here, kept only in memory and never written anywhere.
+# Returns { Key } or { Reason } saying exactly why there is no key. The key and the token are registered as secrets, so nothing
+# the run writes can show them.
+function Get-DelunoApiKey {
+    $url = $script:Ctx.DelunoUrl.TrimEnd('/')
+    try { $status = Invoke-RestMethod -Uri "$url/api/auth/bootstrap-status" -TimeoutSec 10 }
+    catch { return [pscustomobject]@{ Key = $null; Reason = "No Deluno answers at $url (GET /api/auth/bootstrap-status: $($_.Exception.Message))." } }
+    if ($null -eq $status.PSObject.Properties['requiresSetup']) { return [pscustomobject]@{ Key = $null; Reason = "Something answers at $url but it does not look like Deluno (no requiresSetup in its bootstrap status)." } }
+    if (-not $status.requiresSetup) {
+        return [pscustomobject]@{ Key = $null; Reason = "The Deluno at $url already has an account. Deluno keeps only a hash of each API key it hands out, so an existing key cannot be read back, and minting one needs a signed-in Deluno account whose password only the session that made it holds. Nothing in this run carries that password, and the suite does not fall back to its stand-in for this scenario." }
+    }
+    $password = 'Sc-' + [guid]::NewGuid().ToString('N') + '-Aa1'
+    Register-Secret $password
+    $account = @{ username = 'weir-scenarios'; displayName = 'Weir scenarios'; password = $password } | ConvertTo-Json -Compress
+    $signedIn = Invoke-RestMethod -Method POST -Uri "$url/api/auth/bootstrap" -ContentType 'application/json' -Body $account -TimeoutSec 30
+    Register-Secret $signedIn.accessToken
+    Add-Evidence "created a throwaway Deluno account 'weir-scenarios' on the Deluno at $url (it had none); its password was made here and is kept nowhere"
+    $minted = Invoke-RestMethod -Method POST -Uri "$url/api/api-keys" -ContentType 'application/json' -Headers @{ Authorization = "Bearer $($signedIn.accessToken)" } `
+        -Body (@{ name = 'Weir scenarios (throwaway)'; scopes = 'read,imports' } | ConvertTo-Json -Compress) -TimeoutSec 30
+    Register-Secret $minted.apiKey
+    Add-Evidence "minted an API key (scopes read, imports) through Deluno's own API: ****"
+    [pscustomobject]@{ Key = $minted.apiKey; Reason = $null }
+}
+
 function Scenario_workflows_from_deluno {
     if (-not $script:Ctx.DelunoUrl) {
-        return [pscustomobject]@{ NotApplicable = $true; Detail = 'No Deluno was given to this run (-DelunoUrl and -DelunoApiKey), so the step was not run. The real Deluno''s side of the set-up is covered by the golden path''s own checklist.' }
+        return [pscustomobject]@{ NotApplicable = $true; Detail = 'This run was not pointed at a Deluno (a rehearsal does not look for one), so the step was not run. The real Deluno''s side of the set-up is covered by the golden path''s own checklist.' }
     }
+    $obtained = Get-DelunoApiKey
+    if (-not $obtained.Key) { return [pscustomobject]@{ NotApplicable = $true; Detail = $obtained.Reason } }
     $session = $script:Ctx.Session
-    $created = Invoke-Weir -Session $session -Method POST -Path '/api/v1/media-managers/connections' -Body @{ kind = 'deluno'; base_url = $script:Ctx.DelunoUrl; api_key = $script:Ctx.DelunoApiKey; enabled = $true }
+    $created = Invoke-Weir -Session $session -Method POST -Path '/api/v1/media-managers/connections' -Body @{ kind = 'deluno'; base_url = $script:Ctx.DelunoUrl; api_key = $obtained.Key; enabled = $true }
     Assert-That ($created.Status -in 200, 201) "Weir accepted the connection to Deluno at $($script:Ctx.DelunoUrl) (answered $($created.Status): $($created.Text))"
     $connectionId = [int]$created.Json.id
     $workflows = Wait-Until -What 'Weir to set up its workflows from Deluno' -TimeoutSeconds 120 -IntervalMilliseconds 2000 -Probe {

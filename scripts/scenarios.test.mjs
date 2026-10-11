@@ -78,6 +78,31 @@ test("-Plan prints the plan and touches nothing", { skip }, () => {
   assert.match(run.out, /An update over the previous release/);
 });
 
+test("no secret is a parameter: the Deluno step takes a URL only, defaulting to the Deluno inside the VM", { skip }, () => {
+  for (const name of ["Invoke-WeirScenarios.ps1", "Run-WeirScenarios.ps1"]) {
+    const source = readFileSync(join(scenarios, name), "utf8");
+    assert.doesNotMatch(source, /\$DelunoApiKey/, `${name} takes a Deluno API key`);
+    assert.match(source, /\[string\] \$DelunoUrl = 'http:\/\/127\.0\.0\.1:7879'/, `${name} does not default -DelunoUrl to the Deluno in the VM`);
+  }
+  const run = powershell(["-Command", `(Get-Command '${join(scenarios, "Invoke-WeirScenarios.ps1")}').Parameters.Keys -join ','`]);
+  assert.equal(run.status, 0, run.err);
+  assert.doesNotMatch(run.out, /DelunoApiKey|Password|Secret/i);
+});
+
+test("a secret the run holds is masked wherever it would be written", { skip }, () => {
+  const script = [
+    `. '${join(scenarios, "Weir.Scenarios.Lib.ps1")}'`,
+    "Register-Secret 'throwaway-secret-123'",
+    "Protect-Secrets 'key throwaway-secret-123 and deluno_AbC123xyz_-Q9 and plain text'",
+    "Protect-Secrets '{\"connection_id\":1,\"webhook_secret\":\"abcDEF123_-xyz\",\"header_name\":\"X-Webhook-Secret\"}'",
+  ].join("\n");
+  const run = powershell(["-Command", script]);
+  assert.deepEqual(run.out.trim().split(/\r?\n/), [
+    "key **** and **** and plain text",
+    '{"connection_id":1,"webhook_secret":"****","header_name":"X-Webhook-Secret"}',
+  ]);
+});
+
 test("-WhatIf lists the run and the scenarios, and makes no folder or file", { skip }, () => {
   const out = mkdtempSync(join(tmpdir(), "weir-scenarios-whatif-"));
   const run = powershell([

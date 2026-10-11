@@ -21,10 +21,29 @@ function Initialize-ScenarioRun {
     $script:ApiLog = Join-Path $RunFolder 'api-requests.jsonl'
 }
 
+# Secrets this run holds in memory (the account password, a webhook secret, a Deluno API key and token). They are read inside the
+# machine, used there, and never written anywhere: every line that reaches an evidence file, the request log, the console or the
+# record goes through Protect-Secrets, which masks any of them (and anything shaped like a Deluno API key) as ****.
+$script:Secrets = New-Object System.Collections.Generic.List[string]
+
+function Register-Secret {
+    param([string] $Value)
+    if ($Value -and $Value.Length -ge 6 -and -not $script:Secrets.Contains($Value)) { $script:Secrets.Add($Value) }
+}
+
+function Protect-Secrets {
+    param([string] $Text)
+    if (-not $Text) { return $Text }
+    foreach ($secret in $script:Secrets.ToArray()) { $Text = $Text.Replace($secret, '****') }
+    # A secret in a response is masked by its field name too, because the response that first hands it over arrives before it can be registered.
+    $Text = $Text -replace '(?i)("(?:webhook_secret|api_key|apiKey|accessToken|access_token|password|csrf_token)"\s*:\s*")[^"]+', '$1****'
+    $Text -replace '(?i)deluno_[A-Za-z0-9_-]{8,}', '****'
+}
+
 function Add-Evidence {
     param([Parameter(Mandatory)] [string] $Line)
     if ($script:EvidenceFile) {
-        Add-Content -LiteralPath $script:EvidenceFile -Value ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss.fff'), $Line) -Encoding UTF8
+        Add-Content -LiteralPath $script:EvidenceFile -Value ("{0}  {1}" -f (Get-Date -Format 'HH:mm:ss.fff'), (Protect-Secrets $Line)) -Encoding UTF8
     }
 }
 
@@ -142,7 +161,7 @@ function Invoke-Weir {
         try { $json = $text | ConvertFrom-Json } catch { $json = $null }
     }
     $elapsed = [int]((Get-Date) - $started).TotalMilliseconds
-    $shown = if ($text.Length -gt 600) { $text.Substring(0, 600) + '...' } else { $text }
+    $shown = Protect-Secrets $(if ($text.Length -gt 600) { $text.Substring(0, 600) + '...' } else { $text })
     Add-Evidence ("{0} {1} -> {2} ({3} ms) {4}" -f $Method, $Path, $status, $elapsed, $(if ($Method -ne 'GET' -or $status -ge 400 -or $status -eq 0) { $shown } else { '' }))
     if ($script:ApiLog) {
         $line = [ordered]@{ at = (Get-Date).ToUniversalTime().ToString('o'); method = $Method; path = $Path; status = $status; ms = $elapsed; body = $shown }
@@ -290,7 +309,7 @@ function Add-ScenarioResult {
         [Parameter(Mandatory)] [string] $Detail,
         [double] $Seconds = 0
     )
-    $script:Results.Add([pscustomobject]@{ Id = $Id; Status = $Status; Detail = $Detail; Seconds = [math]::Round($Seconds, 1) })
+    $script:Results.Add([pscustomobject]@{ Id = $Id; Status = $Status; Detail = (Protect-Secrets $Detail); Seconds = [math]::Round($Seconds, 1) })
 }
 
 # The record: scenario-<version>-<sha>.md, one line per scenario, then what each scenario did, what had to be true, and
