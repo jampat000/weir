@@ -61,6 +61,18 @@ public sealed class HandbackSpeakerMigrationTests : IDisposable
     }
 
     [Fact]
+    public void A_folder_hand_off_is_matched_through_the_files_it_covered()
+    {
+        Handback("Film/film.mkv", "Deluno", "not-imported");
+        Handoff("folder", "Film", "deluno", "not-imported", connection: 7);
+        Execute("INSERT INTO media_manager_handoff_targets (handoff_row_id, relative_path) SELECT id, 'Film/film.mkv' FROM media_manager_handoffs WHERE handoff_id = 'folder'");
+
+        Migrate();
+
+        Assert.Equal(("deluno", 7L, 1L), Speaker("Film/film.mkv"));
+    }
+
+    [Fact]
     public void A_word_no_hand_off_can_be_matched_to_keeps_no_connection()
     {
         Handback("a.mkv", "Deluno", "not-imported");

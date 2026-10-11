@@ -14,7 +14,6 @@ public sealed partial class HandbackOutcomeApiTests
 {
     private const string ConnectionRoute = "/api/v1/media-managers/connections";
     private const string ImportedElsewhere = "/media/movies/Film/film.mkv";
-    private const string AnotherConnectionRefused = "Weir kept its copy, because another media manager connection said it will not import this file.";
 
     private static async Task<long> DelunoConnectionAsync(WeirTestServer server, string name)
     {
@@ -82,7 +81,7 @@ public sealed partial class HandbackOutcomeApiTests
     // --- identity ------------------------------------------------------------------------------------------------------
 
     [Fact]
-    public async Task A_refusal_from_one_Deluno_connection_is_not_undone_by_the_import_of_another()
+    public async Task A_refusal_is_lifted_by_the_signed_import_of_another_Deluno_connection()
     {
         await using var server = await StartAsync();
         var copy = await FinishedHandoffAsync(server);
@@ -93,15 +92,13 @@ public sealed partial class HandbackOutcomeApiTests
 
         var imported = await OutcomeAnswerAsync(server, "h2", "imported", ImportedElsewhere);
 
-        Assert.Equal(
-            (false, "Weir recorded that Deluno imported the file. " + AnotherConnectionRefused),
-            imported);
-        await AssertTheRefusalStandsAsync(server, copy);
-        Assert.Equal(0, await TestDatabase.ScalarAsync(server, "SELECT count(*) FROM activity_events WHERE title LIKE '%after all'"));
+        Assert.Equal((true, "Weir recorded that Deluno imported the file and released its copy."), imported);
+        Assert.False(File.Exists(copy));
+        Assert.Equal(1, await TestDatabase.ScalarAsync(server, "SELECT count(*) FROM handbacks WHERE outcome = 'imported' AND released_at IS NOT NULL"));
     }
 
     [Fact]
-    public async Task A_refusal_from_Deluno_is_not_undone_by_the_import_of_another_manager()
+    public async Task A_refusal_is_lifted_by_the_signed_import_of_another_manager_without_saying_it_changed_its_mind()
     {
         await using var server = await StartAsync();
         var copy = await FinishedHandoffAsync(server);
@@ -110,9 +107,48 @@ public sealed partial class HandbackOutcomeApiTests
         using var response = await new ApiTestClient(server).PostAsync("/api/v1/intake/webhook/radarr", RadarrImport(copy), SecretHeader);
 
         Assert.Equal(
-            """{"status":"ok","source":"radarr","event":"imported","matched":true,"released":false,"message":"Weir kept its copy, because another media manager connection said it will not import this file."}""",
+            """{"status":"ok","source":"radarr","event":"imported","matched":true,"released":true,"message":"Weir removed its copy from the hand-back folder, because Radarr has the file now."}""",
             await response.Content.ReadAsStringAsync());
-        await AssertTheRefusalStandsAsync(server, copy);
+        Assert.False(File.Exists(copy));
+        Assert.Equal(1, await TestDatabase.ScalarAsync(server, "SELECT count(*) FROM handbacks WHERE outcome = 'imported' AND outcome_by = 'Radarr' AND released_at IS NOT NULL"));
+        Assert.Equal(0, await TestDatabase.ScalarAsync(server, "SELECT count(*) FROM activity_events WHERE title LIKE '%after all'"));
+    }
+
+    [Fact]
+    public async Task A_refusal_from_a_hand_off_Weir_could_not_attribute_to_a_connection_can_be_replaced_by_the_same_kind_of_manager()
+    {
+        await using var server = await StartAsync();
+        var copy = await FinishedHandoffAsync(server);
+        await SecondHandoffAsync(server, "h2", copy);
+        await RefuseAsync(server);
+
+        var refused = await OutcomeAnswerAsync(server, "h2", "not-imported", reason: "The second download was removed.");
+
+        Assert.Equal((false, "Weir recorded that the file will not be imported, and kept its copy."), refused);
+        Assert.Equal(
+            "Deluno will not import this file: The second download was removed. Weir kept its copy in the hand-back folder.",
+            await TestDatabase.ScalarStringAsync(server, "SELECT release_note FROM handbacks"));
+    }
+
+    [Fact]
+    public async Task A_refusal_never_replaces_an_import_that_Weir_could_not_finish_releasing()
+    {
+        await using var server = await StartAsync();
+        var copy = await FinishedHandoffAsync(server);
+        using (var collected = await new ApiTestClient(server).PostAsync("/api/v1/intake/webhook/radarr", RadarrImport(copy), SecretHeader))
+        {
+            Assert.Contains("\"released\":true", await collected.Content.ReadAsStringAsync(), StringComparison.Ordinal);
+        }
+
+        // As an import leaves the copy when it could not be removed (in use): recorded, not settled.
+        await TestDatabase.ExecuteAsync(server, "UPDATE handbacks SET settled_at = NULL, released_at = NULL");
+
+        var refused = await OutcomeAnswerAsync(server, "h1", "not-imported", reason: "Changed its mind.");
+
+        Assert.Equal(
+            (false, "Weir recorded that the file will not be imported. Radarr has already imported it, so Weir left what it recorded about the file as it is."),
+            refused);
+        Assert.Equal(1, await TestDatabase.ScalarAsync(server, "SELECT count(*) FROM handbacks WHERE outcome = 'imported' AND outcome_by = 'Radarr' AND outcome_reason IS NULL"));
     }
 
     [Fact]
