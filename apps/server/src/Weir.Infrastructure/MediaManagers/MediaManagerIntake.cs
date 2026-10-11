@@ -388,6 +388,15 @@ public sealed partial class MediaManagerIntake
                     continue;
                 }
 
+                // A file the pass has cleaned is a repeat for any send, from whichever manager or connection: it is answered with the output
+                // the pass wrote. Looked at again here, inside the write transaction, because the pass may have finished since the first look.
+                if (await CleanedSources.FindAsync(uow, library.Id, library.WatchedFolder, target).ConfigureAwait(false) is { } cleanedNow)
+                {
+                    repeats.Add((target, cleanedNow));
+                    covered.Add(target);
+                    continue;
+                }
+
                 if (taken == Adoption.AnotherManager)
                 {
                     refused.Add(target);
@@ -395,14 +404,7 @@ public sealed partial class MediaManagerIntake
                     continue;
                 }
 
-                // The pass has already told its own send how it ended, so this one cannot share the answer: a file the pass cleaned is a
-                // repeat, and any other is this send's own pass.
-                if (await CleanedSources.FindAsync(uow, library.Id, library.WatchedFolder, target).ConfigureAwait(false) is { } cleanedNow)
-                {
-                    repeats.Add((target, cleanedNow));
-                    covered.Add(target);
-                    continue;
-                }
+                // Otherwise the pass has told its own send how it ended and cannot share the answer: this send has a pass of its own.
             }
 
             await _jobs.EnqueueOrGetAsync(uow, dedupeKey, IntakeRules.RemuxPassJobKind, IntakeRules.PayloadJson(payload), JobQueueRules.DefaultMaxAttempts, runnerCost: null, priority: 0).ConfigureAwait(false);

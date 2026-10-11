@@ -56,27 +56,48 @@ public sealed partial class HandoffCompletionReporter
     /// <summary>The manager to report to, or a sentence saying why there is none.</summary>
     public async Task<(HandoffReportTarget? Target, string? Reason)> ResolveHandoffTargetAsync(UnitOfWork uow, HandoffOrigin origin)
     {
+        var resolution = await ResolveAsync(uow, origin).ConfigureAwait(false);
+        return (resolution.Target, resolution.Reason);
+    }
+
+    /// <summary>Where a report goes, or why it cannot go; <c>KeepOwed</c> when the connection that sent the hand-off is known and cannot be told for now.</summary>
+    private sealed record TargetResolution(HandoffReportTarget? Target, string? Reason, bool KeepOwed = false);
+
+    private async Task<TargetResolution> ResolveAsync(UnitOfWork uow, HandoffOrigin origin)
+    {
         ArgumentNullException.ThrowIfNull(origin);
         if (string.IsNullOrEmpty(origin.CallbackPath))
         {
-            return (null, "the hand-off named no callback path");
+            return new TargetResolution(null, "the hand-off named no callback path");
         }
 
-        // The connection that sent the hand-off is the one that is told how it ended; a second connection of the same kind is not.
+        // The connection that sent the hand-off is the only one told how it ended. A second connection of the same kind never saw it, so
+        // when the sender is known but switched off or removed the report waits for it; the first enabled one is used only when the
+        // hand-off does not say who sent it.
         var owner = string.IsNullOrEmpty(origin.HandoffId) ? null : await HandoffLedgerStore.FindAsync(uow, origin.SourceKey, origin.HandoffId).ConfigureAwait(false);
-        var connection = owner?.ConnectionId is { } owningId &&
-                         await _connectionStore.GetAsync(uow, owningId).ConfigureAwait(false) is { Enabled: true } owning && owning.Kind == origin.SourceKey
-            ? owning
-            : await _connectionStore.FirstEnabledForKindAsync(uow, origin.SourceKey).ConfigureAwait(false);
+        MediaManagerConnectionRecord? connection;
+        if (owner?.ConnectionId is { } owningId)
+        {
+            connection = await _connectionStore.GetAsync(uow, owningId).ConfigureAwait(false);
+            if (connection is not { Enabled: true } || connection.Kind != origin.SourceKey)
+            {
+                return new TargetResolution(null, $"the {origin.SourceKey} connection that sent this hand-off is switched off or was removed, so its report waits for it", KeepOwed: true);
+            }
+        }
+        else
+        {
+            connection = await _connectionStore.FirstEnabledForKindAsync(uow, origin.SourceKey).ConfigureAwait(false);
+        }
+
         if (connection is null)
         {
-            return (null, $"no enabled {origin.SourceKey} connection is configured to report back to");
+            return new TargetResolution(null, $"no enabled {origin.SourceKey} connection is configured to report back to");
         }
 
         var target = _connections.ResolveCallbackTarget(connection);
         if (target is null)
         {
-            return (null, $"the {connection.Label} connection has no address saved");
+            return new TargetResolution(null, $"the {connection.Label} connection has no address saved");
         }
 
         var headers = new Dictionary<string, string>(StringComparer.Ordinal) { ["Content-Type"] = "application/json" };
@@ -85,7 +106,7 @@ public sealed partial class HandoffCompletionReporter
             headers["X-Api-Key"] = target.ApiKey;
         }
 
-        return (
+        return new TargetResolution(
             new HandoffReportTarget(
                 new ManagerConnection(connection.Kind, connection.Name, target.BaseUrl, target.ApiKey ?? string.Empty, connection.Id, connection.Nickname),
                 $"{target.BaseUrl}/{origin.CallbackPath.TrimStart('/')}",
@@ -179,7 +200,7 @@ public sealed partial class HandoffCompletionReporter
         }
         else if (body.Get("failureClass") is WireString { Value: CompletionReports.NotTakenFailureClass })
         {
-            title = $"Told {name} that Weir did not start {fileName}, because it is working on it for another media manager";
+            title = $"Told {name} that Weir did not start {fileName}, because it is working on it for another connection";
         }
         else
         {

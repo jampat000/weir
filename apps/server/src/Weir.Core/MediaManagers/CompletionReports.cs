@@ -83,14 +83,14 @@ public static class CompletionReports
         return Outcome(result) == SupersededOutcome;
     }
 
-    /// <summary>The <c>outcome</c> of the result Weir files for a send it did not start, because it is already working on that file for another media manager.</summary>
+    /// <summary>The <c>outcome</c> of the result Weir files for a send it did not start, because it is already working on that file for another connection.</summary>
     public const string NotTakenOutcome = "not_taken";
 
     public const string NotTakenFailureClass = "not_taken";
 
-    public const string NotTakenMessage = "Weir is already working on this file for another media manager, so it did not start this send.";
+    public const string NotTakenMessage = "Weir is already working on this file for another connection, so it did not start this send.";
 
-    /// <summary>The result that answers a send Weir did not take because the file's pass belongs to another manager.</summary>
+    /// <summary>The result that answers a send Weir did not take because the file's pass belongs to another connection.</summary>
     public static WireObject NotTakenResult(string relativeMediaPath) =>
         new WireObject().Set("ok", false).Set("outcome", NotTakenOutcome).Set("relative_media_path", relativeMediaPath);
 
@@ -150,7 +150,6 @@ public static class CompletionReports
             }
             else if (IsNotTaken(result))
             {
-                body.Set("disposition", "held");
                 body.Set("sourceRemoved", false);
                 body.Set("failureClass", NotTakenFailureClass);
             }
