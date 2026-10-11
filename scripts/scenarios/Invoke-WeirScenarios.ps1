@@ -1,29 +1,36 @@
 <#
 .SYNOPSIS
-    Proves a Weir build on the clean Hyper-V golden VM before it is tagged, and records the result as the `golden-path` commit status.
+    Proves a Weir build on the golden Hyper-V VM before it is tagged, and records the result as the `golden-path` commit status.
 
 .DESCRIPTION
     The same shape as Deluno's scripts/golden-path/Invoke-GoldenPath.ps1, so one session can run both suites in one VM round:
     PowerShell remoting to the Hyper-V host (-RigHost), then PowerShell Direct into the VM, with the two DPAPI credential files
-    Deluno's script uses. The run touches nothing on the host except this one VM (restore its checkpoint, start it, copy files in
-    and results out through a temporary folder it deletes).
+    Deluno's script uses. The run touches nothing on the host except this one VM (restore its checkpoint for the second phase,
+    copy files in and results out through a temporary folder it deletes).
 
-    It runs two phases, each from the clean checkpoint:
-      Fresh   installs the build under test (-InstallerPath) and runs every scenario against it.
-      Update  installs the previous release, uses it, installs the build under test over it, and checks what survived.
+    It runs two phases, in this order:
+      WithDeluno  FIRST, with NO restore, on the VM exactly as Deluno's suite leaves it: Deluno set up, Weir installed by Deluno's
+                  picker (the previous release), and C:\golden\deluno-weir-scenario-key.txt in the VM. It installs the build under
+                  test (-InstallerPath) over that Weir, then follows what Deluno really did through Weir: workflows set up from
+                  Deluno, its film hand-offs, a release with a small extra, a resend, the outcomes, and the Logs.
+      Fresh       SECOND: restores the clean checkpoint (which has no Deluno, so Deluno and the key file are gone by then), installs the
+                  build under test alone and runs the scenarios that need no manager: first visit and account, a film in a Weir-only
+                  workflow, Process again, pause and resume, a deleted queued file, the update buttons, Logs.
     Inside the VM the scenarios run in the signed-in desktop session (a one-shot scheduled task), so the tray has a desktop. They
     are in Run-WeirScenarios.ps1; docs/release.md says what each proves.
 
     Everything the run produced is copied to <OutDirectory>\weir-scenarios-<version>-<sha>\: scenario-<version>-<sha>.md (one line
     per scenario, then what each does, what passes, and what was seen), each scenario's evidence, Weir's server and tray logs,
-    Deluno's logs when it is installed, the stand-in manager's request log (Weir's /api/integrations/processors/events reports) and
-    Weir's own request log.
+    Deluno's logs when it is installed, and Weir's own request log.
 
-    Then the pass record, as docs/golden-path.md step 12 describes: on a full pass it sets the `golden-path` commit status to
-    success on -CommitSha, and on a failure it sets failure, so an earlier success can never be used by mistake. It needs `gh`
-    signed in with the right to write statuses. -NoStatus keeps the record and sets nothing.
+    Then the pass record, as docs/golden-path.md step 12 describes. Success needs BOTH phases and every scenario passed:
+      - every scenario passed: the `golden-path` commit status on -CommitSha is set to success;
+      - any scenario failed, or the run was cut short after tests began: failure, so an earlier success can never be used;
+      - nothing failed but some scenario was not applicable (Deluno not answering, no key file, no hand-off of a kind to follow):
+        pending, naming them. A release cannot pass without the real-Deluno scenarios.
+    It needs `gh` signed in with the right to write statuses. -NoStatus keeps the record and sets nothing.
 
-    -WhatIf lists what the run would do, and the scenarios, and touches no machine.
+    -WhatIf lists what the run would do, in order, and the scenarios, and touches no machine.
 
 .PARAMETER RigHost
     The Hyper-V host that holds the VM. Never committed; pass it on the command line.
@@ -39,18 +46,21 @@
     The full 40-character SHA of the commit that build was made from, and that the tag will point at. The status is set on it. The
     installed build must report its first 7 characters.
 
-.PARAMETER PreviousInstallerPath
-    The previous release's Weir-win-Setup.exe. When omitted it is downloaded with `gh release download` from the newest published
-    release older than -Version (found as release.yml finds it), and its sha256 is recorded.
-
 .PARAMETER DelunoUrl
-    The Deluno inside the VM that the "workflows set up from Deluno" scenario looks for. It defaults to http://127.0.0.1:7879. No
-    secret is passed to the VM or carried between sessions: the scenario gets its API key inside the VM session, by minting one
-    through Deluno's own local API (Deluno stores only a hash of its keys, so one cannot be read back). If no Deluno answers there,
-    or it already has an account, the scenario is recorded not-applicable with exactly that reason.
+    The Deluno inside the VM (default http://127.0.0.1:7879). No secret is passed to the VM or carried between sessions.
+
+.PARAMETER DelunoKeyFileInVm
+    A path INSIDE the VM (default C:\golden\deluno-weir-scenario-key.txt): one line, a `read,imports` Deluno API key and nothing
+    else, written there by the Deluno session. The run reads it in the VM session, never copying it out, and deletes it. The
+    orchestrator only passes the path: it never reads, copies or logs the file.
+
+.PARAMETER WeirLoginFileInVm
+    A path INSIDE the VM (default C:\golden\weir-scenario-login.txt): two lines, a Weir user name then its password. Only for when
+    Weir already has an account (Deluno's Connect Weir makes one) that this run did not make; Weir with no account gets the run's
+    own. Read in the VM and deleted, like the key file.
 
 .PARAMETER SourceFilm
-    Optional. A real film (Big Buck Bunny, Creative Commons) to hand over instead of the film the run makes with Weir's FFmpeg.
+    Optional. A real film (Big Buck Bunny, Creative Commons) to drop in instead of the film the run makes with Weir's own FFmpeg.
 
 .PARAMETER EvidenceUrl
     Where the status points. Defaults to the commit's page; pass the issue comment holding the record once it is posted.
@@ -64,7 +74,6 @@ param(
     [Parameter(Mandatory)] [string] $InstallerPath,
     [Parameter(Mandatory)] [string] $Version,
     [Parameter(Mandatory)] [ValidatePattern('^[0-9a-f]{40}$')] [string] $CommitSha,
-    [string] $PreviousInstallerPath,
     [string] $Repository = 'jampat000/Weir',
     [string] $VmName = 'Deluno-GoldenPath',
     [string] $Checkpoint = 'clean',
@@ -72,6 +81,8 @@ param(
     [string] $VmCredentialFile = (Join-Path $env:LOCALAPPDATA 'Deluno-goldenvm-admin.xml'),
     [string] $OutDirectory,
     [string] $DelunoUrl = 'http://127.0.0.1:7879',
+    [string] $DelunoKeyFileInVm = 'C:\golden\deluno-weir-scenario-key.txt',
+    [string] $WeirLoginFileInVm = 'C:\golden\weir-scenario-login.txt',
     [string] $SourceFilm,
     [string] $EvidenceUrl,
     [int] $PhaseTimeoutMinutes = 60,
@@ -87,27 +98,36 @@ $runFolder = Join-Path $OutDirectory "weir-scenarios-$Version-$shortSha"
 . (Join-Path $PSScriptRoot 'Weir.Scenarios.Lib.ps1')
 . (Join-Path $PSScriptRoot 'Weir.Scenarios.Catalog.ps1')
 
-$phases = @('Fresh', 'Update')
+# The order matters: Deluno's state is only there before the clean checkpoint is restored.
+$phases = @('WithDeluno', 'Fresh')
 
 if ($WhatIfPreference) {
     Write-Host "WhatIf: nothing below is done. No machine is touched, no file is written, no status is set."
     Write-Host "Build under test: $Version, commit $CommitSha (the installed build must report +$shortSha), installer $InstallerPath"
-    Write-Host "Previous release for the Update phase: $(if ($PreviousInstallerPath) { $PreviousInstallerPath } else { 'downloaded with gh from the newest release older than ' + $Version })"
     foreach ($phase in $phases) {
         Write-Host ""
-        Write-Host "Phase ${phase}:"
-        Write-Host "  1. On the Hyper-V host ${RigHost}: restore checkpoint '$Checkpoint' of VM '$VmName' and start it; wait for PowerShell Direct."
-        Write-Host "  2. Copy the scenario scripts, the installer$(if ($phase -eq 'Update') { ', the previous release''s installer' })$(if ($SourceFilm) { ', the film' }) into C:\golden\weir (checking their SHA256)."
-        Write-Host "  3. Start Run-WeirScenarios.ps1 -Phase $phase as a one-shot task in the signed-in desktop session; wait up to $PhaseTimeoutMinutes minutes."
+        if ($phase -eq 'WithDeluno') {
+            Write-Host "Phase ${phase} (first, NO restore): the VM exactly as Deluno's suite left it - Deluno set up, Weir installed by Deluno's picker."
+            Write-Host "  1. On the Hyper-V host ${RigHost}: check VM '$VmName' is running; restore nothing."
+            Write-Host "  2. Copy the scenario scripts and the installer$(if ($SourceFilm) { ' and the film' }) into C:\golden\weir (checking their SHA256)."
+            Write-Host "  3. Start Run-WeirScenarios.ps1 -Phase $phase as a one-shot task in the signed-in desktop session; wait up to $PhaseTimeoutMinutes minutes."
+            Write-Host "     Inside the VM: Deluno is looked for at $DelunoUrl; its API key is read from $DelunoKeyFileInVm and the file deleted (else minted on a Deluno with no account, else not-applicable with the reason); Weir's login, if Weir already has an account, from $WeirLoginFileInVm (read, then deleted). No secret is passed or copied."
+        }
+        else {
+            Write-Host "Phase ${phase} (second): the clean machine."
+            Write-Host "  1. On the Hyper-V host ${RigHost}: restore checkpoint '$Checkpoint' of VM '$VmName' and start it; wait for PowerShell Direct. (Deluno and the key file are gone.)"
+            Write-Host "  2. Copy the scenario scripts and the installer$(if ($SourceFilm) { ' and the film' }) into C:\golden\weir (checking their SHA256)."
+            Write-Host "  3. Start Run-WeirScenarios.ps1 -Phase $phase as a one-shot task in the signed-in desktop session; wait up to $PhaseTimeoutMinutes minutes."
+        }
         Write-Host "  4. Copy its results, evidence and logs back to $runFolder\$($phase.ToLowerInvariant())."
         foreach ($entry in $ScenarioCatalog | Where-Object { $_.Phase -eq $phase }) {
-            Write-Host ("     - {0}{1}" -f $entry.Title, $(if ($entry.Required) { '' } else { ' (optional)' }))
+            Write-Host ("     - {0}" -f $entry.Title)
             Write-Host "         does:   $($entry.Does)"
             Write-Host "         passes: $($entry.Passes)"
         }
     }
     Write-Host ""
-    Write-Host "Then: write $runFolder\scenario-$Version-$shortSha.md; on a full pass set the golden-path status to success on $CommitSha (failure otherwise)$(if ($NoStatus) { ' - not with -NoStatus' })."
+    Write-Host "Then: write $runFolder\scenario-$Version-$shortSha.md; set the golden-path status on $CommitSha$(if ($NoStatus) { ' - not with -NoStatus' }): success only if BOTH phases passed every scenario; failure if any failed; pending if none failed but some were not applicable (no success without the real-Deluno scenarios)."
     return
 }
 
@@ -115,23 +135,6 @@ if (-not (Test-Path -LiteralPath $InstallerPath)) { throw "Installer not found: 
 $InstallerPath = (Resolve-Path -LiteralPath $InstallerPath).Path
 if ($SourceFilm -and -not (Test-Path -LiteralPath $SourceFilm)) { throw "Film not found: $SourceFilm" }
 New-Item -ItemType Directory -Force -Path $runFolder | Out-Null
-
-# --- the previous release ----------------------------------------------------------------------------------------------
-
-$previousTag = $null
-if (-not $PreviousInstallerPath) {
-    $tags = & gh api --paginate "repos/$Repository/releases" --jq '.[] | select(.draft | not) | .tag_name'
-    if ($LASTEXITCODE -ne 0) { throw 'gh could not list the published releases.' }
-    $previousVersion = ($tags | & node (Join-Path $repoRoot 'scripts\find-previous-release.mjs') $Version.Split('+')[0])
-    if (-not $previousVersion) { throw "No published release is older than $Version, so there is nothing to update from. (The first release has no Update phase; say so and run the Fresh phase alone by hand.)" }
-    $previousTag = "v$previousVersion"
-    $download = Join-Path $runFolder "previous-$previousTag"
-    New-Item -ItemType Directory -Force -Path $download | Out-Null
-    & gh release download $previousTag --repo $Repository --pattern 'Weir-win-Setup.exe' --dir $download --clobber
-    if ($LASTEXITCODE -ne 0) { throw "gh could not download Weir-win-Setup.exe from $previousTag." }
-    $PreviousInstallerPath = Join-Path $download 'Weir-win-Setup.exe'
-}
-$PreviousInstallerPath = (Resolve-Path -LiteralPath $PreviousInstallerPath).Path
 
 # --- talking to the VM (the same two hops as Deluno's Invoke-GoldenPath.ps1) --------------------------------------------
 
@@ -186,13 +189,7 @@ function Copy-FromVm([string] $VmFolder, [string] $LocalFolder) {
     finally { Invoke-Command -Session $rig -ArgumentList $staged -ScriptBlock { param($d) Remove-Item -LiteralPath $d -Recurse -Force -ErrorAction SilentlyContinue } }
 }
 
-function Start-CleanVm {
-    Invoke-Command -Session $rig -ArgumentList $VmName, $Checkpoint -ScriptBlock {
-        param($name, $cp)
-        if ((Get-VM -Name $name).State -ne 'Off') { Stop-VM -Name $name -TurnOff -Force }
-        Restore-VMSnapshot -VMName $name -Name $cp -Confirm:$false
-        Start-VM -Name $name
-    }
+function Wait-VmAnswers {
     $deadline = (Get-Date).AddMinutes(15)
     $lastError = ''
     while ((Get-Date) -lt $deadline) {
@@ -201,23 +198,46 @@ function Start-CleanVm {
     throw "The VM did not answer over PowerShell Direct within 15 minutes (last error: $lastError)."
 }
 
+# The Fresh phase's start: the clean checkpoint, which has no Deluno.
+function Restore-CleanVm {
+    Invoke-Command -Session $rig -ArgumentList $VmName, $Checkpoint -ScriptBlock {
+        param($name, $cp)
+        if ((Get-VM -Name $name).State -ne 'Off') { Stop-VM -Name $name -TurnOff -Force }
+        Restore-VMSnapshot -VMName $name -Name $cp -Confirm:$false
+        Start-VM -Name $name
+    }
+    Wait-VmAnswers
+}
+
+# The WithDeluno phase's start: nothing is restored; the VM must already be running as Deluno's suite left it.
+function Use-VmAsItIs {
+    $state = Invoke-Command -Session $rig -ArgumentList $VmName -ScriptBlock { param($n) (Get-VM -Name $n).State.ToString() }
+    if ($state -ne 'Running') { throw "VM '$VmName' is $state, not Running. The WithDeluno phase runs on the VM exactly as Deluno's suite left it, with nothing restored, so Deluno's suite has to have run and left it running." }
+    Wait-VmAnswers
+}
+
 # --- one phase ------------------------------------------------------------------------------------------------------------
 
 function Invoke-Phase([string] $Phase) {
     $local = Join-Path $runFolder $Phase.ToLowerInvariant()
     New-Item -ItemType Directory -Force -Path $local | Out-Null
-    Write-Host "== Phase ${Phase}: restoring '$Checkpoint' on $VmName" -ForegroundColor Cyan
-    Start-CleanVm
+    if ($Phase -eq 'WithDeluno') {
+        Write-Host "== Phase ${Phase}: using $VmName exactly as Deluno's suite left it (no restore)" -ForegroundColor Cyan
+        Use-VmAsItIs
+    }
+    else {
+        Write-Host "== Phase ${Phase}: restoring '$Checkpoint' on $VmName" -ForegroundColor Cyan
+        Restore-CleanVm
+    }
 
     $vmScripts = 'C:\golden\weir\scripts'
+    Invoke-InVm { Remove-Item 'C:\golden\weir\scripts' -Recurse -Force -ErrorAction SilentlyContinue }
     foreach ($script in Get-ChildItem -LiteralPath $PSScriptRoot -Filter '*.ps1') { if ($script.Name -ne 'Invoke-WeirScenarios.ps1') { Copy-ToVm $script.FullName $vmScripts } }
     Copy-ToVm $InstallerPath 'C:\golden\weir\candidate'
-    if ($Phase -eq 'Update') { Copy-ToVm $PreviousInstallerPath 'C:\golden\weir\previous' }
     if ($SourceFilm) { Copy-ToVm $SourceFilm 'C:\golden\weir\film' }
 
-    $arguments = @{ Phase = $Phase; SetupPath = 'C:\golden\weir\candidate\Weir-win-Setup.exe'; Version = $Version; ShortSha = $shortSha }
-    if ($Phase -eq 'Update') { $arguments.PreviousSetupPath = 'C:\golden\weir\previous\Weir-win-Setup.exe' }
-    $arguments.DelunoUrl = $DelunoUrl
+    $arguments = @{ Phase = $Phase; SetupPath = 'C:\golden\weir\candidate\Weir-win-Setup.exe'; Version = $Version; ShortSha = $shortSha
+        DelunoUrl = $DelunoUrl; DelunoKeyFileInVm = $DelunoKeyFileInVm; WeirLoginFileInVm = $WeirLoginFileInVm }
     if ($SourceFilm) { $arguments.SourceFilm = Join-Path 'C:\golden\weir\film' (Split-Path $SourceFilm -Leaf) }
 
     $started = Invoke-InVm {
@@ -299,7 +319,6 @@ foreach ($phase in $phases) {
     }
 }
 $facts['Installer'] = $InstallerPath
-$facts['Previous release'] = "$(if ($previousTag) { $previousTag } else { 'given' }), sha256 $((Get-FileHash -LiteralPath $PreviousInstallerPath -Algorithm SHA256).Hash)"
 if ($aborted) { $facts['Cut short'] = $aborted }
 $resultArray = $results.ToArray()
 $recordFile = Join-Path $runFolder "scenario-$Version-$shortSha.md"
@@ -307,23 +326,25 @@ $kept = @(Get-ChildItem -LiteralPath $runFolder -Recurse -File | Where-Object { 
 Write-ScenarioRecord -Path $recordFile -Catalog $ScenarioCatalog -Results $resultArray -Facts $facts -Files $kept
 Write-Host "Record: $recordFile"
 
-$failed = @($ScenarioCatalog | Where-Object { $entry = $_; $r = @($resultArray | Where-Object { $_.Id -eq $entry.Id }) | Select-Object -First 1; $entry.Required -and (-not $r -or $r.Status -ne 'passed') })
+function Get-ResultOf($Entry) { @($resultArray | Where-Object { $_.Id -eq $Entry.Id }) | Select-Object -First 1 }
+$failed = @($ScenarioCatalog | Where-Object { $r = Get-ResultOf $_; -not $r -or $r.Status -eq 'failed' })
+$notApplicable = @($ScenarioCatalog | Where-Object { $r = Get-ResultOf $_; $r -and $r.Status -eq 'not-applicable' })
 $passedCount = @($resultArray | Where-Object Status -eq 'passed').Count
-$optionalLeft = @($resultArray | Where-Object Status -eq 'not-applicable').Count
-$allPassed = ($failed.Count -eq 0) -and -not $aborted
+$total = @($ScenarioCatalog).Count
+$allPassed = ($failed.Count -eq 0) -and ($notApplicable.Count -eq 0) -and -not $aborted
 
 # --- the pass record --------------------------------------------------------------------------------------------------------
 
 if ($NoStatus) {
-    Write-Host "-NoStatus: the golden-path status is not set. Result: $(if ($allPassed) { 'every required scenario passed' } else { "$($failed.Count) required scenario(s) did not pass" })."
+    Write-Host "-NoStatus: the golden-path status is not set. Result: $passedCount of $total passed, $($failed.Count) failed or missing, $($notApplicable.Count) not applicable."
 }
 elseif (-not $phaseRan -or ($aborted -and $resultArray.Count -eq 0)) {
     Write-Host 'No scenario ran, so there is nothing to record and the golden-path status is left as it was.' -ForegroundColor Yellow
 }
 else {
-    $state = if ($allPassed) { 'success' } else { 'failure' }
-    $description = if ($allPassed) { "Weir scenarios passed: $passedCount of $(@($ScenarioCatalog).Count) ($optionalLeft optional not run), $Version+$shortSha" }
-    else { "Weir scenarios failed: $($failed.Count) of $(@($ScenarioCatalog | Where-Object Required).Count) required did not pass$(if ($aborted) { '; run cut short' }), $Version+$shortSha" }
+    if ($allPassed) { $state = 'success'; $description = "Weir scenarios passed: $passedCount of $total, $Version+$shortSha" }
+    elseif ($failed.Count -gt 0 -or $aborted) { $state = 'failure'; $description = "Weir scenarios failed: $($failed.Count) of $total did not pass$(if ($aborted) { '; run cut short' }), $Version+$shortSha" }
+    else { $state = 'pending'; $description = "Weir scenarios incomplete: $($notApplicable.Count) not applicable ($((@($notApplicable | ForEach-Object { $_.Id }) -join ', '))), $Version+$shortSha" }
     $target = if ($EvidenceUrl) { $EvidenceUrl } else { "https://github.com/$Repository/commit/$CommitSha" }
     & gh api "repos/$Repository/statuses/$CommitSha" -f state=$state -f context=golden-path -f "description=$($description.Substring(0, [Math]::Min(140, $description.Length)))" -f "target_url=$target" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "gh could not set the golden-path status on $CommitSha. The record is at $recordFile." }

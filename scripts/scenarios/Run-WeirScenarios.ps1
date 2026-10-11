@@ -1,45 +1,51 @@
 <#
 .SYNOPSIS
-    Runs Weir's scenarios on the machine it is on: install the build under test, use it the way people do, and say what happened.
+    Runs Weir's scenarios on the machine it is on: use the build under test the way people do, and say what happened.
 
 .DESCRIPTION
-    This is the part of the scenario suite that runs INSIDE the clean golden VM, in the signed-in desktop session, so that the
-    tray has a desktop (Invoke-WeirScenarios.ps1 starts it there). Nothing here touches a machine other than the one it runs on.
+    This is the part of the scenario suite that runs INSIDE the golden VM, in the signed-in desktop session, so that the tray has a
+    desktop (Invoke-WeirScenarios.ps1 starts it there). Nothing here touches a machine other than the one it runs on.
 
-    Phase Fresh installs the build under test on the clean machine and runs every scenario against it. Phase Update, on a
-    second clean machine, installs the previous release, uses it, installs the build under test over it, and checks what survived.
+    Phase WithDeluno runs first, with no restore, on the VM exactly as Deluno's suite leaves it: Deluno set up, Weir installed by
+    Deluno's picker, and a file with a Deluno API key in the VM. It installs the build under test over that Weir, then follows what
+    Deluno really did through Weir. Phase Fresh runs on the clean checkpoint, installs the build under test alone, and runs the
+    scenarios that need no manager.
     Each scenario says what it does and what passes (Weir.Scenarios.Catalog.ps1), writes its own evidence file, and gets one
-    verdict. The run writes results-<phase>.json, the evidence folder, the logs of Weir's server and tray, the stand-in
-    manager's request log, and scenario-<version>-<sha>.md.
+    verdict. The run writes results-<phase>.json, the evidence folder, the logs of Weir's server and tray (and Deluno's when it is
+    there), Weir's request log, and scenario-<version>-<sha>.<phase>.md.
 
     -Plan lists the scenarios and what each one does and passes on, and exits. It touches nothing: no folder, no process, no file.
 
-    -Rehearsal runs the scenarios that do not need an installer against a Weir already running somewhere (-ServerUrl, whose
+    -Rehearsal runs the Fresh scenarios that do not need an installer against a Weir already running somewhere (-ServerUrl, whose
     data folder is -RuntimeHome, and FFmpeg's folder is -ToolsFolder), playing the tray where the real one is missing. It is how a
     change to a scenario is tried before a VM round. A rehearsal's record says so and can never set the golden-path status.
 
 .PARAMETER Phase
-    Fresh or Update.
+    WithDeluno or Fresh.
 
 .PARAMETER SetupPath
     The Weir-win-Setup.exe of the build under test (the manual CI run's artifact weir-windows-<short sha>).
-
-.PARAMETER PreviousSetupPath
-    The previous release's Weir-win-Setup.exe. Phase Update only.
 
 .PARAMETER Version
     The version under test, such as 1.0.0-rc.14. The installed build must report it.
 
 .PARAMETER ShortSha
-    The commit of the build under test (at least 7 characters). When the build reports a commit, it must be this one.
+    The commit of the build under test (at least 7 characters). The build must report it.
 
 .PARAMETER RunFolder
     Where the record, the evidence and the logs are kept.
 
 .PARAMETER DelunoUrl
-    The Deluno on this machine, for the optional "workflows set up from Deluno" scenario. The scenario gets its API key itself,
-    inside this machine (see Get-DelunoApiKey in Weir.Scenarios.Tray.ps1): no key is ever given to the run. A rehearsal looks for
-    no Deluno unless this is given.
+    The Deluno in this machine (default http://127.0.0.1:7879). Its API key is never given to the run; see DelunoKeyFileInVm.
+
+.PARAMETER DelunoKeyFileInVm
+    A file inside this machine holding one line, a `read,imports` Deluno API key and nothing else, left by the Deluno session. It is
+    read here and deleted. Without it, a Deluno with no account gets a throwaway one and a minted key; otherwise the Deluno
+    scenarios are recorded not-applicable with the reason.
+
+.PARAMETER WeirLoginFileInVm
+    A file inside this machine holding two lines, a Weir user name then its password, for when Weir already has an account (Deluno's
+    Connect Weir makes one) and the run was not the one that made it. Read here and deleted. Weir with no account gets the run's own.
 
 .PARAMETER SourceFilm
     A real film to use instead of making one, such as Big Buck Bunny (Creative Commons). Its tracks are not known, so the
@@ -50,9 +56,8 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Fresh', 'Update')] [string] $Phase = 'Fresh',
+    [ValidateSet('WithDeluno', 'Fresh')] [string] $Phase = 'Fresh',
     [string] $SetupPath,
-    [string] $PreviousSetupPath,
     [string] $Version,
     [string] $ShortSha,
     [string] $RunFolder = 'C:\golden\weir\run',
@@ -61,6 +66,8 @@ param(
     [string] $InstallRoot = (Join-Path $env:LOCALAPPDATA 'Weir'),
     [string] $RuntimeHome = (Join-Path $env:ProgramData 'Weir'),
     [string] $DelunoUrl = 'http://127.0.0.1:7879',
+    [string] $DelunoKeyFileInVm = 'C:\golden\deluno-weir-scenario-key.txt',
+    [string] $WeirLoginFileInVm = 'C:\golden\weir-scenario-login.txt',
     [string] $SourceFilm,
     [string[]] $Only,
     [switch] $Plan,
@@ -75,7 +82,9 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Weir.Scenarios.Catalog.ps1')
 . (Join-Path $PSScriptRoot 'Weir.Scenarios.Context.ps1')
 . (Join-Path $PSScriptRoot 'Weir.Scenarios.Install.ps1')
-. (Join-Path $PSScriptRoot 'Weir.Scenarios.Handoffs.ps1')
+. (Join-Path $PSScriptRoot 'Weir.Scenarios.WeirOnly.ps1')
+. (Join-Path $PSScriptRoot 'Weir.Scenarios.Update.ps1')
+. (Join-Path $PSScriptRoot 'Weir.Scenarios.Deluno.ps1')
 . (Join-Path $PSScriptRoot 'Weir.Scenarios.Tray.ps1')
 
 # The warnings and errors a run is allowed to cause on purpose, each with why. An unexplained one fails logs-clean. Empty
@@ -112,7 +121,6 @@ if ($Plan) {
 
 if (-not $Rehearsal) {
     if (-not $SetupPath -or -not $Version -or -not $ShortSha) { throw '-SetupPath, -Version and -ShortSha are required (or -Plan, or -Rehearsal).' }
-    if ($Phase -eq 'Update' -and -not $PreviousSetupPath) { throw '-PreviousSetupPath is required for phase Update.' }
 }
 else {
     if (-not $ServerUrl) { throw '-Rehearsal needs -ServerUrl, the Weir to rehearse against.' }
@@ -126,11 +134,13 @@ $script:Ctx.Base = if ($Rehearsal) { $ServerUrl.TrimEnd('/') } else { "http://12
 $script:Ctx.Version = $Version
 $script:Ctx.ShortSha = $ShortSha
 $script:Ctx.SetupPath = $SetupPath
-$script:Ctx.PreviousSetupPath = $PreviousSetupPath
 $script:Ctx.InstallRoot = $InstallRoot
 $script:Ctx.RuntimeHome = $RuntimeHome
 $script:Ctx.MediaRoot = $MediaRoot
 $script:Ctx.RunFolder = $RunFolder
+$script:Ctx.DelunoKeyFile = $DelunoKeyFileInVm
+$script:Ctx.WeirLoginFile = $WeirLoginFileInVm
+$script:Ctx.PhaseStartUtc = (Get-Date).ToUniversalTime()
 $script:Ctx.DelunoUrl = if ($Rehearsal -and -not $PSBoundParameters.ContainsKey('DelunoUrl')) { '' } else { $DelunoUrl }
 $script:Ctx.SourceFilm = $SourceFilm
 $script:Ctx.ToolsFolder = $ToolsFolder
@@ -140,7 +150,8 @@ $script:Ctx.Session = $null
 
 New-Item -ItemType Directory -Force -Path $MediaRoot | Out-Null
 $runClock = [Diagnostics.Stopwatch]::StartNew()
-$skippedInRehearsal = 'fresh-install', 'update-over-previous'
+# A rehearsal runs no installer and has no Deluno, so these cannot be rehearsed; the scenarios that need only a running Weir can.
+$skippedInRehearsal = 'fresh-install', 'update-over-installed-weir', 'workflows-from-deluno', 'deluno-film-handoff', 'deluno-release-with-extra', 'deluno-resend', 'deluno-outcomes', 'logs-clean-deluno'
 
 foreach ($entry in $phaseScenarios) {
     $script:EvidenceFile = Join-Path $RunFolder "evidence\$($entry.Id).log"
@@ -154,7 +165,9 @@ foreach ($entry in $phaseScenarios) {
         }
         $function = Get-ScenarioFunction -Id $entry.Id
         if (-not $function) { throw "The scenario has no function Scenario_$($entry.Id.Replace('-', '_'))." }
-        if ($entry.Id -ne 'fresh-install' -and $entry.Id -ne 'first-visit-account' -and $entry.Id -ne 'update-over-previous' -and $null -eq $script:Ctx.Session) {
+        # The Fresh phase's scenarios after the account is made share its session. The Deluno phase's scenarios get theirs themselves
+        # (Initialize-WeirSession), because the Weir they find may already have an account.
+        if ($Phase -eq 'Fresh' -and $entry.Id -ne 'fresh-install' -and $entry.Id -ne 'first-visit-account' -and $null -eq $script:Ctx.Session) {
             if (-not $script:Ctx.ContainsKey('Username')) { throw 'Blocked: the account was never created, so there is nothing to sign in to.' }
             $script:Ctx.Session = Sign-InScenarioAccount
         }
@@ -180,7 +193,6 @@ foreach ($entry in $phaseScenarios) {
 
 # --- what to keep ---------------------------------------------------------------------------------------------------
 
-try { Stop-StandIn } catch { Write-Host "The stand-in manager could not be stopped: $($_.Exception.Message)" -ForegroundColor Yellow }
 
 if ($Rehearsal) { Add-Content -LiteralPath (Join-Path $RuntimeHome 'tray-host.log') -Value "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Rehearsal: the tray is played by the suite." }
 $kept = New-Object System.Collections.Generic.List[string]
@@ -204,9 +216,7 @@ foreach ($source in $sources) {
     catch [System.Management.Automation.ItemNotFoundException] { }
     catch { Write-Host "Could not keep $($source.From): $($_.Exception.Message)" -ForegroundColor Yellow }
 }
-foreach ($name in 'api-requests.jsonl', 'stand-in-manager-requests.jsonl') {
-    if (Test-Path -LiteralPath (Join-Path $RunFolder $name)) { $kept.Add($name) }
-}
+if (Test-Path -LiteralPath (Join-Path $RunFolder 'api-requests.jsonl')) { $kept.Add('api-requests.jsonl') }
 $kept.Add('evidence/<scenario>.log (one per scenario)')
 
 $facts = @{
@@ -217,7 +227,6 @@ $facts = @{
     Rehearsal = $(if ($Rehearsal) { 'YES: no installer was run and the tray was played; this record can never set the golden-path status' } else { 'no' })
 }
 if ($SetupPath -and (Test-Path -LiteralPath $SetupPath)) { $facts['Installer sha256'] = (Get-FileHash -LiteralPath $SetupPath -Algorithm SHA256).Hash }
-if ($PreviousSetupPath -and (Test-Path -LiteralPath $PreviousSetupPath)) { $facts['Previous installer sha256'] = (Get-FileHash -LiteralPath $PreviousSetupPath -Algorithm SHA256).Hash }
 if ($script:Ctx.ContainsKey('FilmMaster')) { $facts['Film'] = "$([IO.Path]::GetFileName($script:Ctx.FilmMaster.Path)), $($script:Ctx.FilmMaster.Summary.Bytes) bytes, sha256 $($script:Ctx.FilmMaster.Sha256)$(if ($script:Ctx.FilmMaster.Generated) { ' (made with Weir''s FFmpeg)' } else { ' (given to the run)' })" }
 
 $allResults = $script:Results.ToArray()

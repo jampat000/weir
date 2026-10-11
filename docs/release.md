@@ -84,44 +84,63 @@ suite, run on the golden VM on the exact commit.
 
 `scripts/scenarios/Invoke-WeirScenarios.ps1` is the same shape as Deluno's `Invoke-GoldenPath.ps1` (PowerShell remoting to
 the Hyper-V host, PowerShell Direct into the VM, the same two credential files), so the Deluno session runs both suites in
-one VM round. It restores the clean checkpoint twice, once for each phase:
+one VM round. It runs two phases, **in this order**:
+
+1. **WithDeluno, first, with no restore,** on the VM exactly as Deluno's suite leaves it: Deluno set up, Weir installed by
+   Deluno's picker (the previous release, running), and the key file for Deluno's API in the VM. It installs the build under
+   test over that Weir, then follows what Deluno really did through Weir.
+2. **Fresh, second:** the clean checkpoint is restored (it has no Deluno, which is why this phase is second), the build under
+   test is installed alone, and the scenarios that need no manager run.
 
 ```powershell
 ./scripts/scenarios/Invoke-WeirScenarios.ps1 -RigHost <host> -InstallerPath .\weir-build\Weir-win-Setup.exe `
   -Version 1.0.0-rc.14 -CommitSha <the 40-character SHA that will be tagged>
 ```
 
-`-DelunoUrl` (default `http://127.0.0.1:7879`, inside the VM) says where the optional Deluno step looks. No secret is ever passed on a command line or carried between sessions: that step mints its own API key inside the VM, through Deluno's local API, and records the step not-applicable with the exact reason if no Deluno answers there or Deluno already has an account. Add `-SourceFilm <path>` to hand
-over a real film (Big Buck Bunny, Creative Commons) instead of the one the run makes with Weir's own FFmpeg, and `-NoStatus` to
-keep the record without setting the status. `-WhatIf` lists the run and the scenarios and touches no machine. The previous
-release for the update phase is downloaded with `gh` (the newest published release older than `-Version`) unless
-`-PreviousInstallerPath` is given. `Run-WeirScenarios.ps1 -Plan` prints the scenarios alone.
+No secret is ever passed on a command line or carried between sessions; every secret is read only inside the VM, and the
+orchestrator only passes paths. `-DelunoUrl` (default `http://127.0.0.1:7879`) is where Deluno is looked for in the VM.
+`-DelunoKeyFileInVm` (default `C:\golden\deluno-weir-scenario-key.txt`, a path inside the VM) is a file of **one line: a
+`read,imports` Deluno API key and nothing else**, which the Deluno session writes there; the suite reads it in the VM session
+and deletes it. If it is not there, a Deluno with no account gets a throwaway one and a minted key; otherwise the Deluno
+scenarios are recorded not-applicable with the reason. `-WeirLoginFileInVm` (default `C:\golden\weir-scenario-login.txt`,
+two lines: user name, then password) is only for a Weir that already has an account the run did not make (Deluno's Connect Weir
+makes one); a Weir with no account gets the run's own. Both files are read and deleted inside the VM. `-SourceFilm <path>`
+drops a real film (Big Buck Bunny, Creative Commons) in instead of the one the run makes with Weir's own FFmpeg, `-NoStatus`
+keeps the record without setting the status, and `-WhatIf` lists the run, in order, and the scenarios and touches no machine.
+`Run-WeirScenarios.ps1 -Plan` prints the scenarios alone.
 
 Each scenario drives the installed Weir through its real HTTP API and its real tray files (the pause request, the
-update-check and download flags, the pre-update copy request), with real media, and says what it does and what passes. The
-run keeps both apps' logs and writes `scenario-<version>-<sha>.md`, one line per scenario, in
+update-check and download flags, the pre-update copy request), and Deluno through its own API, with real media, and says what
+it does and what passes. The run keeps both apps' logs and writes `scenario-<version>-<sha>.md`, one line per scenario, in
 `artifacts/weir-scenarios-<version>-<short sha>/`, beside each scenario's evidence, Weir's server and tray logs, Deluno's logs
-when Deluno is installed, and the request log for Deluno's `/api/integrations/processors/events` (the reports Weir sent).
+when Deluno is installed, and Weir's request log.
+
+**The pass record needs both phases and every scenario.** Success is set only when every scenario passed. A scenario whose
+preconditions are not met (no Deluno answering, no key file, no film hand-off or small extra to follow, a Weir whose login was
+not left) is recorded not-applicable with the reason, and a run with any of them sets `pending`, not success, so a release
+cannot pass without the real-Deluno scenarios. A failure, or a run cut short after tests began, sets `failure`.
 
 | Phase | Scenario | What it proves |
 | --- | --- | --- |
+| WithDeluno | An update over the Weir Deluno installed | The build under test installed with `Setup --silent` over the running picker-installed Weir brings it back by itself on the right version and commit; the account, a workflow and the Activity from before survive; the copy saved before the update exists when the database changed; the updated server saves the tray's requested copy; a film is cleaned afterwards. |
+| WithDeluno | Workflows set up from Deluno | With the key from the key file, Weir's workflows are linked to the Deluno in the VM with its folders and the folder chain is ready. |
+| WithDeluno | A film Deluno handed over | Every completed film hand-off in Deluno's own list shows in Weir as processed with Deluno's imported answer recorded against it. |
+| WithDeluno | A release with a small extra | A release Deluno handed over holds a cleaned film and an extra under the minimum size that Weir skipped, not failed; nothing needs the person. |
+| WithDeluno | A hand-off sent again from Deluno | Deluno's own send-again of an imported outcome is recorded delivered or settled, never refused, and Weir keeps its one answer and raises no failure. |
+| WithDeluno | What Deluno was told about every outcome | No outcome is pending, refused, never received or given up on; Deluno's and Weir's answers for each file agree. |
+| WithDeluno | Logs with no unexpected warnings, with Deluno | System > Logs, the server log and the tray log hold no unexplained warning or error since the phase began. |
 | Fresh | Fresh install | `Setup --silent` exits 0; the installed build reports the version and commit under test; the tray and server run; the server listens on this PC only; no window opens. |
 | Fresh | First visit and account creation | A brand-new Edge profile lands on account creation, then (once the account exists) on sign-in; neither ever says a session expired. |
-| Fresh | A film handed over | A film with three audio languages and two subtitle tracks is handed to the intake webhook; Weir keeps the video and the English audio, removes the rest, leaves the original and its `.nfo` alone, reports once to the manager, and releases its copy when the manager says it imported it. |
-| Fresh | A release with a small extra | The extra under the workflow's minimum size is skipped quietly, in place, unreported, and nothing needs the person. |
-| Fresh | A hand-off sent again | A resent hand-off, and a second id for the same download, are answered with the first completed report; nothing is cleaned twice; Activity says so. |
-| Fresh | Pause and resume from the tray | The tray's pause-request file pauses Weir; a hand-off during the pause waits with nothing cleaned, written or removed; the resume request runs it once; Activity shows both by the tray. |
+| Fresh | A film dropped into a Weir-only workflow | A film with three audio languages and two subtitle tracks dropped in a watched folder is cleaned: the video and the English audio kept, the rest removed, the original and its `.nfo` untouched. |
 | Fresh | Process again | The answer is "Weir already cleaned this file, so it skipped it", Activity says "Skipped: already done", and no second output or job appears. |
+| Fresh | Pause and resume from the tray | The tray's pause-request file pauses Weir; a film dropped in during the pause is found and held with nothing cleaned, written or removed; the resume request runs it once; Activity shows both by the tray. |
 | Fresh | A deleted file that was waiting | A file deleted while Weir waits for it to settle becomes "no longer there", never a failure, with no warning in the log. |
 | Fresh | The update buttons | Check for updates and Download update reach the real tray, which takes each flag and brings the update state to an answer. |
-| Fresh | The copy saved before an update | The tray's backup request makes the running server save a consistent copy under `backups\pre-update`, and System overview names it. |
-| Fresh | Workflows set up from Deluno (optional) | With a Deluno in the VM that has no account yet, the run creates a throwaway account there, mints an API key in the VM (never shown, logged or recorded), and Weir's workflows are linked to that Deluno with its folders and the folder chain ready. Recorded not-applicable, with the reason, when no Deluno answers or it already has an account. |
 | Fresh | Logs with no unexpected warnings | System > Logs, the server log and the tray log hold no warning or error the suite does not name as caused on purpose. |
-| Update | An update over the previous release | The previous release is installed and used, the build under test is installed over the running Weir, and Weir returns by itself on the new version with its account, workflow and Activity intact (and the pre-update copy when the database changed), then cleans a film. |
 
-The hand-off scenarios stand in for Deluno's side (`Start-StandInManager.ps1`): it answers the paths a Deluno connection
-needs, records every request, and makes no library of its own, so the run builds its own workflow over its own folders and
-links it to the connection. Deluno's real side is the golden path's own checklist.
+Hand-offs cannot be made by a script: one starts when a download finishes in one of Deluno's clients, so the Deluno scenarios
+follow the real hand-offs Deluno's own suite made, from both ends, and drive what Deluno does offer (its send-again). The
+hand-off path through Weir's intake webhook is covered by the contract suite.
 
 Every scenario is real or it is not there: a check that cannot fail is removed, an intermittent failure is a bug until its
 root cause is found (the owner, 11 Oct 2026), and a failure is fixed with a test that does what the scenario did.
@@ -155,8 +174,9 @@ root cause is found (the owner, 11 Oct 2026), and a failure is fixed with a test
   `apps/server/Directory.Build.props`. Either way the artifact's name and its run's `headSha` tie it to the
   commit, and it is never published.
 
-**2. Run it on the clean VM.** The scenario suite above runs on the Hyper-V Windows VM, which is reverted to its saved clean
-checkpoint before each phase, with this build's `Weir-win-Setup.exe` made from the commit being tagged. It runs unattended.
+**2. Run it on the golden VM.** The scenario suite above runs on the Hyper-V Windows VM right after Deluno's suite, with this
+build's `Weir-win-Setup.exe` made from the commit being tagged: first on the VM as Deluno's suite left it, then (after the
+saved clean checkpoint is restored) on the clean machine. It runs unattended.
 The rig stays the long-running real-data box and is not the golden path.
 
 **3. The checklist.** [golden-path.md](golden-path.md) is the shared checklist for both products, the same word for word
@@ -168,7 +188,10 @@ ticked list.
 `Invoke-WeirScenarios.ps1` does at the end of the run, with a link to the evidence:
 
 ```bash
-gh api repos/jampat000/Weir/statuses/<full sha>   -f state=success -f context=golden-path   -f description="Weir scenarios passed: 12 of 13 (1 optional not run), 1.0.0-rc.14+abc1234"   -f target_url="https://github.com/jampat000/Weir/issues/<n>#issuecomment-<id>"
+gh api repos/jampat000/Weir/statuses/<full sha> \
+  -f state=success -f context=golden-path \
+  -f description="Weir scenarios passed: 15 of 15, 1.0.0-rc.14+abc1234" \
+  -f target_url="https://github.com/jampat000/Weir/issues/<n>#issuecomment-<id>"
 ```
 
 A run that fails is recorded the same way with `state=failure`. The newest status for the context is the one that

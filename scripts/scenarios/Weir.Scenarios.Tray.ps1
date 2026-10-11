@@ -1,6 +1,6 @@
 <#
-    The scenarios about what the tray and the server leave each other, a Deluno that is really there, and the logs:
-    the update buttons, the copy saved before an update, workflows set up from Deluno, and Logs.
+    The scenarios about what the tray and the server leave each other, and the logs: the update buttons, the copy saved before an
+    update (a helper the update scenario uses), and Logs (Fresh phase, and the same check since the update in the Deluno phase).
 #>
 
 # Standing in for the tray, for a rehearsal on a machine with no tray: it keeps the heartbeat fresh and takes the update
@@ -84,9 +84,11 @@ function Scenario_update_requests {
     "The tray was alive; Check for updates -> the tray logged ""Check-now flag detected"" and the check $checkedText; Download update -> the tray logged ""Download-now flag detected"" and $downloadText."
 }
 
-# --- pre-update-copy ----------------------------------------------------------------------------------------------------
+# --- the copy saved before an update ------------------------------------------------------------------------------------
 
-function Scenario_pre_update_copy {
+# Asks the running server for the copy of Weir's data the tray asks for before it applies an update (the tray's request file),
+# and checks the answer. Returns a sentence for the record.
+function Test-PreUpdateCopyRequest {
     $dataFolder = $script:Ctx.RuntimeHome
     $session = $script:Ctx.Session
     $ready = Wait-Until -What 'the server to say it can take a request for a copy of its data' -TimeoutSeconds 60 -Probe {
@@ -94,7 +96,6 @@ function Scenario_pre_update_copy {
         if ($text) { $text | ConvertFrom-Json }
     }
     Assert-That ([int]$ready.pid -gt 0) "the server's ready marker names process $($ready.pid)"
-
     $id = 'scenario-' + [guid]::NewGuid().ToString('N')
     $target = '9.9.9'
     Write-FileAtomically -Folder $dataFolder -Name 'update-backup-request.json' -Text (@{ id = $id; requested_at = (Get-Date).ToUniversalTime().ToString('o'); target_version = $target } | ConvertTo-Json -Compress)
@@ -103,73 +104,19 @@ function Scenario_pre_update_copy {
         if ($text) { $result = $text | ConvertFrom-Json; if ($result.id -eq $id -and $result.state -in 'saved', 'failed') { $result } }
     }
     Assert-That ($answer.state -eq 'saved') "the server saved the copy (state $($answer.state)$(if ($answer.PSObject.Properties['reason']) { ': ' + $answer.reason }))"
-    $expectedFolder = Join-Path $dataFolder 'backups\pre-update'
-    Assert-That ((Split-Path -Parent $answer.path) -eq $expectedFolder) "the copy is under $expectedFolder"
+    Assert-That ((Split-Path -Parent $answer.path) -eq (Join-Path $dataFolder 'backups\pre-update')) 'the copy is under backups\pre-update'
     Assert-That ((Split-Path -Leaf $answer.path) -match '^weir-\d{4}-to-9\.9\.9-\d{8}T\d{6}Z\.db$') "the copy is named for the version it was saved before ($(Split-Path -Leaf $answer.path))"
     $size = (Get-Item -LiteralPath $answer.path).Length
     Assert-That ($size -gt 0) "the copy is not empty ($size bytes)"
     Wait-Until -What 'the server to take the answered request away' -TimeoutSeconds 30 -Probe { -not (Test-Path -LiteralPath (Join-Path $dataFolder 'update-backup-request.json')) } | Out-Null
     $overview = Get-WeirJson $session '/api/v1/system/overview'
     Assert-That ($overview.last_update_backup.path -eq $answer.path -and $overview.last_update_backup.to_version -eq $target) 'System overview names that copy as the last update backup'
-    "The server (pid $($ready.pid)) answered the tray's request with a saved copy, $(Split-Path -Leaf $answer.path) ($size bytes), and System overview names it."
+    "the tray's request for a copy was answered with $(Split-Path -Leaf $answer.path) ($size bytes), and System overview names it"
 }
 
-# --- workflows-from-deluno ----------------------------------------------------------------------------------------------
+# --- logs ---------------------------------------------------------------------------------------------------------------
 
-# Gets an API key for the Deluno on this machine without any secret from outside the VM. Deluno keeps only a hash of each key it
-# hands out (api_keys.key_hash in its platform database), so an existing key cannot be read back; the way to have one is to mint
-# it through Deluno's own local API (POST /api/api-keys, a Deluno account signed in). A Deluno with no account yet lets this
-# machine create one (POST /api/auth/bootstrap), with a password made here, kept only in memory and never written anywhere.
-# Returns { Key } or { Reason } saying exactly why there is no key. The key and the token are registered as secrets, so nothing
-# the run writes can show them.
-function Get-DelunoApiKey {
-    $url = $script:Ctx.DelunoUrl.TrimEnd('/')
-    try { $status = Invoke-RestMethod -Uri "$url/api/auth/bootstrap-status" -TimeoutSec 10 }
-    catch { return [pscustomobject]@{ Key = $null; Reason = "No Deluno answers at $url (GET /api/auth/bootstrap-status: $($_.Exception.Message))." } }
-    if ($null -eq $status.PSObject.Properties['requiresSetup']) { return [pscustomobject]@{ Key = $null; Reason = "Something answers at $url but it does not look like Deluno (no requiresSetup in its bootstrap status)." } }
-    if (-not $status.requiresSetup) {
-        return [pscustomobject]@{ Key = $null; Reason = "The Deluno at $url already has an account. Deluno keeps only a hash of each API key it hands out, so an existing key cannot be read back, and minting one needs a signed-in Deluno account whose password only the session that made it holds. Nothing in this run carries that password, and the suite does not fall back to its stand-in for this scenario." }
-    }
-    $password = 'Sc-' + [guid]::NewGuid().ToString('N') + '-Aa1'
-    Register-Secret $password
-    $account = @{ username = 'weir-scenarios'; displayName = 'Weir scenarios'; password = $password } | ConvertTo-Json -Compress
-    $signedIn = Invoke-RestMethod -Method POST -Uri "$url/api/auth/bootstrap" -ContentType 'application/json' -Body $account -TimeoutSec 30
-    Register-Secret $signedIn.accessToken
-    Add-Evidence "created a throwaway Deluno account 'weir-scenarios' on the Deluno at $url (it had none); its password was made here and is kept nowhere"
-    $minted = Invoke-RestMethod -Method POST -Uri "$url/api/api-keys" -ContentType 'application/json' -Headers @{ Authorization = "Bearer $($signedIn.accessToken)" } `
-        -Body (@{ name = 'Weir scenarios (throwaway)'; scopes = 'read,imports' } | ConvertTo-Json -Compress) -TimeoutSec 30
-    Register-Secret $minted.apiKey
-    Add-Evidence "minted an API key (scopes read, imports) through Deluno's own API: ****"
-    [pscustomobject]@{ Key = $minted.apiKey; Reason = $null }
-}
-
-function Scenario_workflows_from_deluno {
-    if (-not $script:Ctx.DelunoUrl) {
-        return [pscustomobject]@{ NotApplicable = $true; Detail = 'This run was not pointed at a Deluno (a rehearsal does not look for one), so the step was not run. The real Deluno''s side of the set-up is covered by the golden path''s own checklist.' }
-    }
-    $obtained = Get-DelunoApiKey
-    if (-not $obtained.Key) { return [pscustomobject]@{ NotApplicable = $true; Detail = $obtained.Reason } }
-    $session = $script:Ctx.Session
-    $created = Invoke-Weir -Session $session -Method POST -Path '/api/v1/media-managers/connections' -Body @{ kind = 'deluno'; base_url = $script:Ctx.DelunoUrl; api_key = $obtained.Key; enabled = $true }
-    Assert-That ($created.Status -in 200, 201) "Weir accepted the connection to Deluno at $($script:Ctx.DelunoUrl) (answered $($created.Status): $($created.Text))"
-    $connectionId = [int]$created.Json.id
-    $workflows = Wait-Until -What 'Weir to set up its workflows from Deluno' -TimeoutSeconds 120 -IntervalMilliseconds 2000 -Probe {
-        Invoke-Weir -Session $session -Method POST -Path "/api/v1/media-managers/connections/$connectionId/test" -Body @{} | Out-Null
-        $linked = @((Get-WeirJson $session '/api/v1/processing/libraries') | Where-Object { $_.folders_synced_from_connection_id -eq $connectionId -and $_.watched_folder -and $_.output_folder })
-        if ($linked.Count -ge 1) { $linked }
-    }
-    foreach ($workflow in $workflows) {
-        Assert-That (@($workflow.manager_connection_ids) -contains $connectionId) "'$($workflow.name)' is linked to Deluno"
-        Assert-That ($workflow.watched_folder -and $workflow.output_folder) "'$($workflow.name)' has its folders from Deluno (watched $($workflow.watched_folder), output $($workflow.output_folder))"
-        $chain = Get-WeirJson $session "/api/v1/processing/libraries/$($workflow.id)/folder-chain"
-        Assert-That ($chain.ready -eq $true) "the folder chain for '$($workflow.name)' is ready"
-    }
-    "Weir set up $($workflows.Count) workflow(s) from Deluno ($(@($workflows | ForEach-Object { $_.name }) -join ', ')), linked, with their folders from Deluno and every step of the folder chain ready."
-}
-
-# --- logs-clean ---------------------------------------------------------------------------------------------------------
-
-# Lines of Weir's JSON server log at warning or worse, as { Line; Level; Message }.
+# Lines of Weir's JSON server log at warning or worse, as { Level; Message; At }.
 function Get-ServerLogProblems {
     param([Parameter(Mandatory)] [string] $Path)
     $text = Get-FileTextOrNull -Path $Path
@@ -178,35 +125,45 @@ function Get-ServerLogProblems {
         if (-not $line.Trim().StartsWith('{')) { continue }
         try { $entry = $line | ConvertFrom-Json } catch { continue }
         if ([string]$entry.level -in 'WARNING', 'ERROR', 'CRITICAL', 'FATAL') {
-            [pscustomobject]@{ Level = $entry.level; Message = [string]$entry.message; Logger = [string]$entry.logger }
+            [pscustomobject]@{ Level = $entry.level; Message = [string]$entry.message; At = [datetime]::Parse([string]$entry.timestamp).ToUniversalTime() }
         }
     }
 }
 
-# Lines of the tray's log that report trouble.
+# Lines of the tray's log that report trouble, as { Line; At } (the tray stamps local time).
 function Get-TrayLogProblems {
     $pattern = '(?i)(could not|unhandled|fatal|exited unexpectedly|giving up|failed|did not stop|killing it|stopped after an error|not starting|error)'
-    @((Get-TrayLogText) -split "`r?`n" | Where-Object { $_.Trim() -and $_ -match $pattern })
+    foreach ($line in ((Get-TrayLogText) -split "`r?`n")) {
+        if (-not $line.Trim() -or $line -notmatch $pattern) { continue }
+        $at = [datetime]::MinValue
+        if ($line -match '^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\]') { $at = ([datetime]::Parse($Matches[1])).ToUniversalTime() }
+        [pscustomobject]@{ Line = $line; At = $at }
+    }
 }
 
-function Scenario_logs_clean {
+# The check behind both Logs scenarios: nothing at warning or error on the Logs page, in the server's log file or in the tray's log
+# that the suite does not name as caused on purpose, counting only what was written at or after $Since (UTC) when given.
+function Test-LogsClean {
+    param([datetime] $Since = [datetime]::MinValue)
     $paths = Get-WeirPaths
     $known = @($script:Ctx.KnownLogRows)
-    $page = @(Get-LogPageProblems)
+    $page = @(Get-LogPageProblems | Where-Object { [datetime]::Parse($_.at).ToUniversalTime() -ge $Since })
     $unexpectedPage = @(Get-UnexpectedLogRows -Rows $page -Known $known)
     Assert-That ($unexpectedPage.Count -eq 0) "System > Logs shows no unexpected warning or error (found $($unexpectedPage.Count): $((@($unexpectedPage | ForEach-Object { $_.title }) -join ' | ')))"
 
-    $server = @(Get-ServerLogProblems -Path $paths.ServerLog)
     $serverText = Get-FileTextOrNull -Path $paths.ServerLog
     Assert-That ($serverText -and $serverText.Length -gt 0) "the server log exists and has lines ($($paths.ServerLog))"
+    $server = @(Get-ServerLogProblems -Path $paths.ServerLog | Where-Object { $_.At -ge $Since })
     $unexpectedServer = @($server | Where-Object { $row = $_; -not (@($known | Where-Object { $row.Message -match $_.Pattern }).Count -gt 0) })
     Assert-That ($unexpectedServer.Count -eq 0) "the server log file has no unexpected warning or error (found $($unexpectedServer.Count): $((@($unexpectedServer | ForEach-Object { $_.Level + ' ' + $_.Message }) -join ' | ')))"
 
-    $trayText = Get-TrayLogText
-    Assert-That ($trayText.Length -gt 0) "the tray log exists and has lines ($($paths.TrayLog))"
-    $tray = @(Get-TrayLogProblems | Where-Object { $line = $_; -not (@($known | Where-Object { $line -match $_.Pattern }).Count -gt 0) })
-    Assert-That ($tray.Count -eq 0) "the tray log has no line reporting trouble (found $($tray.Count): $(($tray -join ' | ')))"
-    $explained = @($page).Count + @($server).Count - $unexpectedPage.Count - $unexpectedServer.Count
-    $onPurpose = if ($known.Count -gt 0) { "$explained caused on purpose and named in the suite ($((@($known | ForEach-Object { $_.Why }) -join '; ')))" } else { 'none were caused on purpose' }
+    Assert-That ((Get-TrayLogText).Length -gt 0) "the tray log exists and has lines ($($paths.TrayLog))"
+    $tray = @(Get-TrayLogProblems | Where-Object { $_.At -ge $Since } | Where-Object { $row = $_; -not (@($known | Where-Object { $row.Line -match $_.Pattern }).Count -gt 0) })
+    Assert-That ($tray.Count -eq 0) "the tray log has no line reporting trouble (found $($tray.Count): $((@($tray | ForEach-Object { $_.Line }) -join ' | ')))"
+    $onPurpose = if ($known.Count -gt 0) { "$($page.Count + $server.Count - $unexpectedPage.Count - $unexpectedServer.Count) caused on purpose and named in the suite ($((@($known | ForEach-Object { $_.Why }) -join '; ')))" } else { 'none were caused on purpose' }
     "Logs page: $($page.Count) warning/error row(s); server log file: $(@($server).Count); tray log: no line reporting trouble; $onPurpose."
+}
+
+function Scenario_logs_clean {
+    Test-LogsClean
 }

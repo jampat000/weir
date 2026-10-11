@@ -27,7 +27,7 @@ Decided by the owner, 7 Oct 2026 (#903), after bugs kept turning up in things th
 2. **Every fix gets a test that does what the user does:** a real HTTP request against a running Weir, or a
    Playwright click. A check of an attribute or a label is not that test.
 3. **Weir's scenario suite gates every tag, release candidates included.** Before the tag, the exact commit's build is
-   installed on the clean golden VM and Weir's scenario suite is run against it (`scripts/scenarios`; `docs/release.md`,
+   installed on the golden VM (first as Deluno's suite leaves it, then on the clean checkpoint) and Weir's scenario suite is run against it (`scripts/scenarios`; `docs/release.md`,
    "Proof before tagging"). The run is recorded as the commit status `golden-path`, and `release.yml` refuses to publish any
    tag whose commit has no passing one. There is no release-candidate pass-through and no waiver: a release is proven before its
    tag, never after it (the owner, 11 Oct 2026, #954; the pass-through added in #907 is gone). An intermittent failure is a bug

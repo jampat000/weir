@@ -1,6 +1,6 @@
 <#
-    What the scenarios share: the run's context, Weir's installed paths, the stand-in for Deluno, and the calls a
-    hand-off, Activity and the file list need. Dot-sourced by Run-WeirScenarios.ps1 after Weir.Scenarios.Lib.ps1.
+    What the scenarios share: the run's context, Weir's installed paths, getting a signed-in session, and the calls Activity, the
+    file list and the job list need. Dot-sourced by Run-WeirScenarios.ps1 after Weir.Scenarios.Lib.ps1.
 #>
 
 # The context the runner fills in before the first scenario. Scenarios read it and add what later scenarios need.
@@ -11,12 +11,9 @@ function Get-Prop {
     if ($null -ne $Object -and $Object.PSObject.Properties[$Name]) { $Object.$Name } else { $null }
 }
 
-function Get-FreePort {
-    $probe = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
-    $probe.Start()
-    $port = $probe.LocalEndpoint.Port
-    $probe.Stop()
-    $port
+function New-NotApplicable {
+    param([Parameter(Mandatory)] [string] $Reason)
+    [pscustomobject]@{ NotApplicable = $true; Detail = $Reason }
 }
 
 # --- the installed Weir -----------------------------------------------------------------------------------------------
@@ -61,6 +58,8 @@ function Get-TrayLogText {
     if ($null -eq $text) { '' } else { $text }
 }
 
+# --- a signed-in session ----------------------------------------------------------------------------------------------
+
 # The account the run uses. A throwaway password made for this run, never shown in the record.
 function New-ScenarioAccount {
     $script:Ctx.Username = 'scenario-admin'
@@ -74,120 +73,47 @@ function Sign-InScenarioAccount {
     $session
 }
 
-# --- the stand-in for Deluno ------------------------------------------------------------------------------------------
-
-function Start-StandIn {
-    $folder = $script:Ctx.RunFolder
-    $script:Ctx.StandInLog = Join-Path $folder 'stand-in-manager-requests.jsonl'
-    $script:Ctx.StandInStop = Join-Path $folder 'stand-in-manager.stop'
-    Remove-Item -LiteralPath $script:Ctx.StandInStop -Force -ErrorAction SilentlyContinue
-    $script:Ctx.StandInPort = Get-FreePort
-    $arguments = @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'Start-StandInManager.ps1'),
-        '-Port', $script:Ctx.StandInPort, '-RequestLog', $script:Ctx.StandInLog, '-StopFile', $script:Ctx.StandInStop)
-    $script:Ctx.StandInProcess = Start-Process -FilePath 'powershell.exe' -ArgumentList $arguments -WindowStyle Hidden -PassThru
-    Wait-Until -What 'the stand-in manager to answer' -TimeoutSeconds 30 -Probe {
-        (Invoke-WebRequest -Uri "http://127.0.0.1:$($script:Ctx.StandInPort)/api/integrations/external/health" -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200
-    } | Out-Null
-    Add-Evidence "stand-in manager listening on 127.0.0.1:$($script:Ctx.StandInPort), pid $($script:Ctx.StandInProcess.Id)"
+# Reads a login the Deluno session left in the VM (two lines: the user name, then the password), then deletes the file. Used
+# only when Weir already has an account whose password this run was not given any other way. The same rule as the Deluno key file:
+# it is read inside the VM and never copied out.
+function Read-WeirLoginFile {
+    $path = $script:Ctx.WeirLoginFile
+    if (-not $path -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    $lines = @(Get-Content -LiteralPath $path | Where-Object { $_.Trim() })
+    Remove-Item -LiteralPath $path -Force
+    if (Test-Path -LiteralPath $path) { throw "The login file $path was read but could not be deleted, so it was left lying around." }
+    if ($lines.Count -ne 2) { throw "The login file $path did not hold two lines (the user name, then the password), and it has been deleted." }
+    Register-Secret $lines[1].Trim()
+    Add-Evidence "read Weir's login from $path inside this machine and deleted the file: user $($lines[0].Trim()), password ****"
+    [pscustomobject]@{ Username = $lines[0].Trim(); Password = $lines[1].Trim() }
 }
 
-# Stops only the process this run started.
-function Stop-StandIn {
-    if (-not $script:Ctx.ContainsKey('StandInProcess')) { return }
-    New-Item -ItemType File -Force -Path $script:Ctx.StandInStop | Out-Null
-    $process = $script:Ctx.StandInProcess
-    if (-not $process.WaitForExit(10000)) { Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue }
-}
-
-# Every request the stand-in has received, oldest first, as { at; method; path; query; headers; body (text); Json (parsed body or $null) }.
-function Get-StandInRequests {
-    param([string] $Method, [string] $PathPrefix)
-    $text = Get-FileTextOrNull -Path $script:Ctx.StandInLog
-    if (-not $text) { return @() }
-    $rows = foreach ($line in ($text -split "`r?`n")) {
-        if (-not $line.Trim()) { continue }
-        $row = $line | ConvertFrom-Json
-        $json = $null
-        if ($row.body) { try { $json = $row.body | ConvertFrom-Json } catch { $json = $null } }
-        $row | Add-Member -NotePropertyName Json -NotePropertyValue $json -PassThru
+# Makes sure the run has a signed-in session on the Weir that is running. Weir with no account yet gets the run's own; one with an
+# account needs its login from the login file in the VM. Returns $true, or $false with the reason in $script:Ctx.NoSessionReason.
+function Initialize-WeirSession {
+    if ($script:Ctx.Session) { return $true }
+    if ($script:Ctx.ContainsKey('Username') -and $script:Ctx.Username) {
+        $script:Ctx.Session = Sign-InScenarioAccount
+        return $true
     }
-    @($rows | Where-Object { (-not $Method -or $_.method -eq $Method) -and (-not $PathPrefix -or $_.path.StartsWith($PathPrefix)) })
-}
-
-# What Weir told the stand-in about one hand-off, oldest first (Deluno's /api/integrations/processors/events).
-function Get-StandInReports {
-    param([Parameter(Mandatory)] [string] $HandoffId)
-    @(Get-StandInRequests -Method POST -PathPrefix '/api/integrations/processors/events' |
-        Where-Object { $_.Json -and (Get-Prop $_.Json 'handoffId') -eq $HandoffId })
-}
-
-# Connects Weir to the stand-in as a Deluno connection and takes its webhook secret, once.
-function Connect-StandInManager {
-    if ($script:Ctx.ContainsKey('WebhookSecret')) { return }
-    Start-StandIn
-    $session = $script:Ctx.Session
-    $connection = Get-WeirJson $session '/api/v1/media-managers/connections' -Method POST -Body @{
-        kind = 'deluno'; base_url = "http://127.0.0.1:$($script:Ctx.StandInPort)"; api_key = 'scenario-stand-in-key'; enabled = $true }
-    $script:Ctx.ConnectionId = $connection.id
-    $script:Ctx.WebhookSecret = (Get-WeirJson $session "/api/v1/media-managers/connections/$($connection.id)/webhook-secret" -Method POST -Body @{}).webhook_secret
-    Register-Secret $script:Ctx.WebhookSecret
-    Add-Evidence "connected Weir to the stand-in as connection $($connection.id) ($($connection.name))"
-}
-
-# A movie workflow over folders of its own, linked to the stand-in connection when -LinkedToStandIn.
-function New-ScenarioWorkflow {
-    param(
-        [Parameter(Mandatory)] [string] $Name,
-        [Parameter(Mandatory)] [string] $Root,
-        [switch] $LinkedToStandIn,
-        [int] $MinimumMegabytes = 1,
-        [int] $ReadyAfterSeconds = 0
-    )
-    $folders = @{}
-    foreach ($kind in 'watched', 'work', 'output') {
-        $folders[$kind] = (New-Item -ItemType Directory -Force -Path (Join-Path $Root $kind)).FullName
+    $anonymous = New-WeirSession -BaseUrl $script:Ctx.Base
+    $status = Get-WeirJson $anonymous '/api/v1/auth/bootstrap/status'
+    if ($status.bootstrap_allowed -eq $true) {
+        New-ScenarioAccount
+        $created = Invoke-Weir -Session $anonymous -Method POST -Path '/api/v1/auth/bootstrap' -Body @{ username = $script:Ctx.Username; password = $script:Ctx.Password }
+        if ($created.Status -ne 200) { throw "Creating the run's account answered $($created.Status): $($created.Text)" }
+        $script:Ctx.Session = Sign-InScenarioAccount
+        return $true
     }
-    $body = @{
-        name = $Name; media_type = 'movie'
-        watched_folder = $folders.watched; work_folder = $folders.work; output_folder = $folders.output
-        ready_after_seconds = $ReadyAfterSeconds; min_file_size_mb = $MinimumMegabytes; skip_access_tests = $true
-        retry_backoff_seconds = 1; minimum_free_disk_space_mb = 0
+    $login = Read-WeirLoginFile
+    if ($login) {
+        $script:Ctx.Username = $login.Username
+        $script:Ctx.Password = $login.Password
+        $script:Ctx.Session = Sign-InScenarioAccount
+        return $true
     }
-    if ($LinkedToStandIn) { $body['manager_connection_ids'] = @([int]$script:Ctx.ConnectionId) }
-    $created = Get-WeirJson $script:Ctx.Session '/api/v1/processing/libraries' -Method POST -Body $body
-    [pscustomobject]@{ Id = [int]$created.id; Name = $Name; Watched = $folders.watched; Work = $folders.work; Output = $folders.output }
-}
-
-# --- hand-offs ----------------------------------------------------------------------------------------------------------
-
-$script:SecretHeader = { @{ 'X-Webhook-Secret' = $script:Ctx.WebhookSecret } }
-
-# What Deluno sends when it hands Weir a download (the payload the contract suite and Deluno share).
-function Send-HandOff {
-    param([Parameter(Mandatory)] [string] $Id, [Parameter(Mandatory)] [string] $SourcePath, [string] $ReleaseName = 'Big.Buck.Bunny.2008.WEB-DL')
-    $response = Invoke-Weir -Session $script:Ctx.Session -Method POST -Path '/api/v1/intake/webhook/deluno' -NotABrowser -Headers (& $script:SecretHeader) -Body @{
-        eventType = 'deluno.processor-handoff'; handoffId = $Id; libraryId = 'scenario-movies'; mediaType = 'movies'
-        sourcePath = $SourcePath; releaseName = $ReleaseName; callbackPath = '/api/integrations/processors/events' }
-    if ($response.Status -ne 200) { throw "The hand-off $Id was answered $($response.Status): $($response.Text)" }
-    $response.Json
-}
-
-function Get-HandOff {
-    param([Parameter(Mandatory)] [string] $Id)
-    $response = Invoke-Weir -Session $script:Ctx.Session -Method GET -Path "/api/v1/intake/handoffs/deluno/$Id" -NotABrowser -Headers (& $script:SecretHeader)
-    if ($response.Status -ne 200) { throw "The status of hand-off $Id was answered $($response.Status): $($response.Text)" }
-    $response.Json
-}
-
-function Wait-HandOff {
-    param([Parameter(Mandatory)] [string] $Id, [Parameter(Mandatory)] [string] $State, [int] $TimeoutSeconds = 180)
-    Wait-Until -What "hand-off $Id to reach '$State'" -TimeoutSeconds $TimeoutSeconds -IntervalMilliseconds 500 -Probe {
-        $status = Get-HandOff -Id $Id
-        if ($status.state -eq $State) { $status }
-        elseif ($status.state -in 'failed', 'cancelled') { throw "Hand-off $Id ended $($status.state): $($status.message)" }
-        else { $false }
-    }
+    $script:Ctx.NoSessionReason = "Weir already has an account (it is not offering to create one), and no login was left for this run in the VM ($($script:Ctx.WeirLoginFile)), so there is no way to sign in without a secret from outside."
+    $false
 }
 
 # --- Activity, files and jobs --------------------------------------------------------------------------------------------
@@ -200,8 +126,10 @@ function Get-ActivityItems {
 }
 
 function Get-ScenarioFiles {
-    param([Parameter(Mandatory)] [int] $LibraryId)
-    @((Get-WeirJson $script:Ctx.Session "/api/v1/processing/files?limit=1000&library_id=$LibraryId").files)
+    param([int] $LibraryId)
+    $path = '/api/v1/processing/files?limit=1000'
+    if ($LibraryId) { $path += "&library_id=$LibraryId" }
+    @((Get-WeirJson $script:Ctx.Session $path).files)
 }
 
 function Get-RemuxJobs {

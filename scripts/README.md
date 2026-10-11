@@ -50,7 +50,7 @@ work, not rewritten for its own sake. Scripts are named in kebab-case.
 
 | Script | What it does |
 | --- | --- |
-| `scenarios/` | Weir's VM scenario suite, PowerShell because it drives the installed Windows build (#954): `Invoke-WeirScenarios.ps1` is the orchestrator for the golden VM (same shape as Deluno's `Invoke-GoldenPath.ps1`), `Run-WeirScenarios.ps1` runs inside the VM, `Weir.Scenarios.*.ps1` hold the catalog and the scenarios, `Start-StandInManager.ps1` plays Deluno's side of a hand-off. `scenarios.test.mjs` checks that every file parses, every scenario has code and is in the docs, and `-WhatIf` touches nothing. |
+| `scenarios/` | Weir's VM scenario suite, PowerShell because it drives the installed Windows build (#954): `Invoke-WeirScenarios.ps1` is the orchestrator for the golden VM (same shape as Deluno's `Invoke-GoldenPath.ps1`), `Run-WeirScenarios.ps1` runs inside the VM, `Weir.Scenarios.*.ps1` hold the catalog and the scenarios. `scenarios.test.mjs` checks that every file parses, every scenario has code and is in the docs, and `-WhatIf` touches nothing. |
 | `pre-push.mjs` | The pre-push checks `.githooks/pre-push` runs: no Python, the contract areas, prettier, the dead-code guard and API types drift. |
 | `build-brand-icons.mjs` | Renders every raster icon (favicon, apple touch icon, Windows tray and installer icon) from the SVGs in `packaging/brand`; `--check` compares them with the committed files without changing anything (`build-brand-icons.test.mjs`). Needs `npm ci` in `apps/web`. |
 | `stop-dev-api-port.mjs` | Stops the dev API that this worktree's `npm run dev` started, and nothing else. |
