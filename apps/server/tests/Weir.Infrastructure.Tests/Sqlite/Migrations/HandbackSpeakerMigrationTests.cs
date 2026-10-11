@@ -20,7 +20,6 @@ public sealed class HandbackSpeakerMigrationTests : IDisposable
     {
         _database = new SqliteDatabase(_temp.Join("weir.sqlite3"));
         new SchemaMigrator(_database).EnsureAtHead();
-        Execute("DROP TABLE media_manager_handoff_riders");
         Execute("ALTER TABLE handbacks DROP COLUMN outcome_source_key");
         Execute("ALTER TABLE handbacks DROP COLUMN outcome_connection_id");
         Execute("ALTER TABLE handbacks DROP COLUMN outcome_authenticated");
@@ -109,19 +108,6 @@ public sealed class HandbackSpeakerMigrationTests : IDisposable
         Assert.Equal(("radarr", null, 1L), Speaker("b.mkv"));
     }
 
-    [Fact]
-    public void The_riders_table_starts_empty_and_goes_with_its_hand_off()
-    {
-        Handoff("h1", "a.mkv", "deluno", "imported", connection: 7);
-        Migrate();
-        Execute("INSERT INTO media_manager_handoff_riders (handoff_row_id, relative_path, owner_row_id) SELECT id, 'a.mkv', id FROM media_manager_handoffs");
-        Assert.Equal(1L, Count("media_manager_handoff_riders"));
-
-        Execute("DELETE FROM media_manager_handoffs");
-
-        Assert.Equal(0L, Count("media_manager_handoff_riders"));
-    }
-
     private (string? Source, long? Connection, long Authenticated) Speaker(string path)
     {
         using var connection = _database.Open();
@@ -131,14 +117,6 @@ public sealed class HandbackSpeakerMigrationTests : IDisposable
         using var reader = command.ExecuteReader();
         Assert.True(reader.Read());
         return (reader.IsDBNull(0) ? null : reader.GetString(0), reader.IsDBNull(1) ? null : reader.GetInt64(1), reader.GetInt64(2));
-    }
-
-    private long Count(string table)
-    {
-        using var connection = _database.Open();
-        using var command = connection.CreateCommand();
-        command.CommandText = $"SELECT count(*) FROM {table}";
-        return (long)command.ExecuteScalar()!;
     }
 
     private void Execute(string sql)

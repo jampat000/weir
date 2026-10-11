@@ -83,8 +83,9 @@ public sealed partial class HeldFileReturnTests
         await HandOffAsync("first");
         _beforeReport = async () =>
         {
-            // An outcome that leaves no cleaned source behind, so the resend is a new send for the pass and not a repeat.
+            // An outcome that leaves no cleaned source behind (neither in the file's row nor in the hand-back record), so the resend is a new send for the pass and not a repeat.
             await _fixture.Store.Execute("UPDATE files SET processed_source_size = NULL, processed_source_mtime_ns = NULL");
+            await _fixture.Store.Execute("UPDATE handbacks SET source_size = NULL, source_mtime_ns = NULL");
             await HandOffAsync("second");
         };
 

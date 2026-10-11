@@ -279,7 +279,6 @@ public sealed class StartupSchemaTests(StartupSchemaTests.HeadSchemaFixture fixt
         SeedSql.Execute(connection, "ALTER TABLE handbacks DROP COLUMN outcome_source_key");
         SeedSql.Execute(connection, "ALTER TABLE handbacks DROP COLUMN outcome_connection_id");
         SeedSql.Execute(connection, "ALTER TABLE handbacks DROP COLUMN outcome_authenticated");
-        SeedSql.Execute(connection, "DROP TABLE media_manager_handoff_riders");
     }
 
     /// <summary>

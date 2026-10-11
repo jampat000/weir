@@ -1,4 +1,4 @@
--- Weir schema 0045 (revision 0080_handback_speaker): who said what about a copy, and which hand-off an answer rides on.
+-- Weir schema 0045 (revision 0080_handback_speaker): who said what about a copy.
 --
 -- Hand-offs of one file, from several connections and several managers, share the one copy Weir wrote, so what the copy says
 -- is the word of one speaker at a time. The word was kept under the manager's display name, and two Deluno connections both
@@ -37,19 +37,3 @@ WHERE outcome_source_key IS NOT NULL;
 UPDATE handbacks
 SET outcome_authenticated = 0
 WHERE outcome = 'imported' AND release_note LIKE '%carry no webhook secret%';
-
--- 4. A hand-off received while another hand-off's pass was already working on the same file is answered from the file's own
---    state and covers no file of its own. It rides on the hand-off that owns the pass, so an answer for it can be tied to the
---    copy that pass wrote and to no later one.
-CREATE TABLE media_manager_handoff_riders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    handoff_row_id INTEGER NOT NULL,
-    -- The file's path in the watched folder, the same key as files.relative_path.
-    relative_path TEXT NOT NULL,
-    -- The hand-off whose pass is working on the file.
-    owner_row_id INTEGER NOT NULL,
-    CONSTRAINT fk_media_manager_handoff_riders_handoff_row_id FOREIGN KEY (handoff_row_id) REFERENCES media_manager_handoffs (id) ON DELETE CASCADE,
-    CONSTRAINT fk_media_manager_handoff_riders_owner_row_id FOREIGN KEY (owner_row_id) REFERENCES media_manager_handoffs (id) ON DELETE CASCADE
-);
-
-CREATE UNIQUE INDEX uq_media_manager_handoff_riders_handoff_row_id_relative_path ON media_manager_handoff_riders (handoff_row_id, relative_path);

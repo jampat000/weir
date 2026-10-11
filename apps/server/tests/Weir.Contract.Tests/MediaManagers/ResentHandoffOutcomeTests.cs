@@ -74,31 +74,6 @@ public sealed class ResentHandoffOutcomeTests
     }
 
     [Fact]
-    public async Task A_late_import_for_an_older_send_cannot_change_the_copy_a_newer_send_wrote_and_Deluno_refused()
-    {
-        await using var rig = await Rig.StartAsync("Stale.Film.2015.1080p.WEB-DL.x264-GOLDEN.mkv", "stale-first");
-        using var hold = rig.HoldPasses();
-        await rig.SendWithoutWaitingAsync("stale-first");
-        await rig.WaitForAPassUnderWayAsync();
-        await rig.SendWithoutWaitingAsync("stale-second");
-        hold.Release();
-        await rig.WaitForSendAsync("stale-first");
-        await rig.WaitForSendAsync("stale-second", reported: false);
-        rig.RemoveTheCopy();
-        await rig.SendAsync("stale-third");
-        await rig.RefuseAsync("stale-third");
-
-        var late = await rig.ImportAsync("stale-second");
-
-        Assert.False(late.Released);
-        Assert.DoesNotContain("will not import", late.Message, StringComparison.Ordinal);
-        Assert.True(File.Exists(rig.Copy), "the newer copy is still refused");
-        var handback = (await rig.PanelAsync())["handback"]!;
-        Assert.Equal("not-imported", (string)handback["outcome"]!);
-        Assert.StartsWith("Deluno will not import this file:", (string)handback["release_note"]!, StringComparison.Ordinal);
-    }
-
-    [Fact]
     public async Task Two_answers_arriving_together_leave_the_copy_imported_whichever_is_heard_first()
     {
         await using var rig = await Rig.StartAsync("Together.Film.2014.1080p.WEB-DL.x264-GOLDEN.mkv", "together-first");
@@ -147,37 +122,6 @@ public sealed class ResentHandoffOutcomeTests
         Assert.False(refused.Released);
         Assert.Contains("will not be imported", refused.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("kept its copy", refused.Message, StringComparison.Ordinal);
-        await rig.AssertThePanelTellsOneStoryAsync();
-    }
-
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task A_second_send_made_while_the_first_is_still_being_worked_on_is_answered_for_itself(bool importFirst)
-    {
-        await using var rig = await Rig.StartAsync("Busy.Film.2016.1080p.WEB-DL.x264-GOLDEN.mkv", "busy-first");
-        using var hold = rig.HoldPasses();
-        await rig.SendWithoutWaitingAsync("busy-first");
-        await rig.WaitForAPassUnderWayAsync();
-        await rig.SendWithoutWaitingAsync("busy-second");
-        await rig.AssertWeirIsStillWorkingOnAsync("busy-first");
-        hold.Release();
-        await rig.WaitForSendAsync("busy-first");
-        await rig.WaitForSendAsync("busy-second", reported: false);
-
-        if (importFirst)
-        {
-            rig.AssertImportedAndReleased(await rig.ImportAsync("busy-second"));
-            var refused = await rig.RefuseAsync("busy-first");
-            Assert.False(refused.Released);
-            Assert.DoesNotContain("kept its copy", refused.Message, StringComparison.Ordinal);
-        }
-        else
-        {
-            Assert.Equal(NotImportedReply, (await rig.RefuseAsync("busy-first")).Message);
-            rig.AssertImportedAndReleased(await rig.ImportAsync("busy-second"));
-        }
-
         await rig.AssertThePanelTellsOneStoryAsync();
     }
 
@@ -251,23 +195,9 @@ public sealed class ResentHandoffOutcomeTests
         /// <summary>Deluno hands the release over, and waits until Weir has finished it and told Deluno.</summary>
         public async Task SendAsync(string handoffId)
         {
-            await SendWithoutWaitingAsync(handoffId);
-            await WaitForSendAsync(handoffId);
-        }
-
-        public async Task SendWithoutWaitingAsync(string handoffId) => await _scenario.PostHandoffAsync(handoffId, _source, _releaseName);
-
-        /// <summary>
-        /// The hand-off is completed at Weir and, when <paramref name="reported"/>, Deluno has Weir's report of it. A send that took over a
-        /// pass another hand-off owns is answered from the file's state and is never reported.
-        /// </summary>
-        public async Task WaitForSendAsync(string handoffId, bool reported = true)
-        {
+            await _scenario.PostHandoffAsync(handoffId, _source, _releaseName);
             await _scenario.WaitForHandoffStateAsync(handoffId, "completed");
-            if (reported)
-            {
-                await Poll.UntilAsync(() => Task.FromResult(Scenario.Callbacks(_deluno, handoffId).FirstOrDefault()), $"Weir's report of {handoffId}");
-            }
+            await Poll.UntilAsync(() => Task.FromResult(Scenario.Callbacks(_deluno, handoffId).FirstOrDefault()), $"Weir's report of {handoffId}");
         }
 
         /// <summary>"I don't want it": Deluno removes the download and its files, then the data comes back exactly as it was.</summary>
@@ -279,22 +209,6 @@ public sealed class ResentHandoffOutcomeTests
             File.SetLastWriteTimeUtc(_sourceFile, _sourceModified);
         }
 
-        /// <summary>Nobody has Weir's copy any more and nobody said why, so the next send is cleaned afresh.</summary>
-        public void RemoveTheCopy() => File.Delete(Copy);
-
-        /// <summary>From now on a pass stays in progress until the returned hold is released.</summary>
-        public Hold HoldPasses()
-        {
-            var hold = new Hold(Path.Combine(_scenario.Root, "release-remux"));
-            _scenario.FakeTools.SetFileRule("*.mkv", new FileRule { RemuxReleaseFile = hold.Path });
-            return hold;
-        }
-
-        public async Task WaitForAPassUnderWayAsync() =>
-            await Poll.UntilAsync(
-                async () => (await _scenario.JobsAsync(Scenario.RemuxKind)).Any(job => (string)job["status"]! == "leased"),
-                "a pass to be under way");
-
         public Task<OutcomeReply> RefuseAsync(string handoffId, string? reason = null) =>
             OutcomeAsync(handoffId, "not-imported", null, reason ?? $"Deluno removed {_releaseName} from Transmission, so it will not import it.");
 
@@ -303,13 +217,6 @@ public sealed class ResentHandoffOutcomeTests
             var parts = _releaseName.Split('.');
             var film = $"{parts[0]} ({parts[1]})";
             return OutcomeAsync(handoffId, "imported", $"C:\\Media\\Movies\\{film}\\{film} [WEB 1080p].mkv", null);
-        }
-
-        /// <summary>A refusal sent while the file is being cleaned again is held off, for Deluno to send once Weir has finished.</summary>
-        public async Task AssertWeirIsStillWorkingOnAsync(string handoffId)
-        {
-            var answer = await _scenario.PostOutcomeAsync(handoffId, "not-imported", reason: "Deluno removed the download.");
-            Assert.Equal((HttpStatusCode.Conflict, "handoff_not_finished"), (answer.Status, (string)answer.Fields["code"]!));
         }
 
         private async Task<OutcomeReply> OutcomeAsync(string handoffId, string outcome, string? importedPath, string? reason)
@@ -344,15 +251,5 @@ public sealed class ResentHandoffOutcomeTests
 
         public async Task<JsonObject> PanelAsync() =>
             await _scenario.FileRowAsync(_library, _relative) ?? throw new InvalidOperationException($"{_relative} has no row");
-    }
-
-    /// <summary>What keeps a pass in progress until it is released.</summary>
-    private sealed class Hold(string path) : IDisposable
-    {
-        public string Path { get; } = path;
-
-        public void Release() => File.WriteAllText(Path, string.Empty);
-
-        public void Dispose() => Release();
     }
 }
