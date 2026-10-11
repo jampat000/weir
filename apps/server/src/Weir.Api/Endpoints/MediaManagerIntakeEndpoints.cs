@@ -130,7 +130,8 @@ internal sealed class MediaManagerIntakeEndpointHandlers
             // #652: Sonarr's and Radarr's "imported" is heard now. A file Weir handed back is recorded, and Weir's copy
             // released when that is safe; anything else is answered as before and changes nothing.
             var imported = await _handbackOutcomes
-                .RecordManagerImportAsync(uow, importEvent, ManagerName(dialect.Key), identity.Authenticated).ConfigureAwait(false);
+                .RecordManagerImportAsync(uow, importEvent, ManagerName(dialect.Key), new ManagerSpeaker(dialect.Key, identity.ConnectionId, identity.Authenticated))
+                .ConfigureAwait(false);
             if (!imported.Matched)
             {
                 return ApiRoutes.Ok(new WireObject().Set("status", "ignored").Set("source", dialect.Key).Set("event", importEvent.EventKind));

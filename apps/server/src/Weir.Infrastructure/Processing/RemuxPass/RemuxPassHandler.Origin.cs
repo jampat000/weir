@@ -1,6 +1,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Weir.Core.Json;
+using Weir.Core.MediaManagers;
 using Weir.Infrastructure.Sqlite;
 
 namespace Weir.Infrastructure.Processing.RemuxPass;
@@ -24,6 +25,12 @@ public sealed partial class RemuxPassHandler
             return null;
         }
     }
+
+    private static bool IsSameHandoff(WireObject? current, WireObject adopted) =>
+        current is not null &&
+        HandoffOrigin.FromPayload(new WireObject().Set("origin", current)) is { } before &&
+        HandoffOrigin.FromPayload(new WireObject().Set("origin", adopted)) is { } after &&
+        before.SourceKey == after.SourceKey && before.HandoffId == after.HandoffId;
 
     /// <summary>The origin written onto this job's own row after it started, or null.</summary>
     private async Task<WireObject?> AdoptedOriginAsync(long jobId, CancellationToken cancellationToken)

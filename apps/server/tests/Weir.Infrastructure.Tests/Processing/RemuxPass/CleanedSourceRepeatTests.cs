@@ -325,7 +325,7 @@ public sealed class CleanedSourceRepeatTests : IDisposable
         var collectedAt = DateTimeOffset.Parse("2026-10-07T04:30:00Z", CultureInfo.InvariantCulture);
         await _fixture.Db(async uow =>
         {
-            await _fixture.Handback.RecordOutcomeAsync(uow, handback!.Id, HandbackRules.Imported, "Deluno", collectedAt, "/movies/Film/film.mkv", null);
+            await _fixture.Handback.RecordOutcomeAsync(uow, handback!.Id, HandbackRules.Imported, "Deluno", new ManagerSpeaker("deluno", 1, true), collectedAt, "/movies/Film/film.mkv", null);
             return 0;
         });
         File.Delete(OutputFile);

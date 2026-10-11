@@ -41,28 +41,30 @@ public sealed class HandbackOutcomes
 
     /// <summary>
     /// Sonarr or Radarr imported a file. When it is one Weir handed back, record it and release Weir's copy by the shared
-    /// rule. <paramref name="authenticated"/> says the message carried a webhook secret: without one it is recorded but never
-    /// removes anything, since anybody could have sent it. A file Weir never handed back changes nothing.
+    /// rule. <paramref name="speaker"/> says who sent it and whether the message carried a webhook secret: without one it is
+    /// recorded but never removes anything, since anybody could have sent it, and it never changes what a manager has
+    /// already said about the copy (<see cref="HandbackRules.Hears"/>). A file Weir never handed back changes nothing.
     /// </summary>
-    public async Task<ManagerImportResult> RecordManagerImportAsync(UnitOfWork uow, MediaManagerImportEvent importEvent, string manager, bool authenticated)
+    public async Task<ManagerImportResult> RecordManagerImportAsync(UnitOfWork uow, MediaManagerImportEvent importEvent, string manager, ManagerSpeaker speaker)
     {
         ArgumentNullException.ThrowIfNull(uow);
         ArgumentNullException.ThrowIfNull(importEvent);
+        ArgumentNullException.ThrowIfNull(speaker);
         var row = await MatchAsync(uow, importEvent).ConfigureAwait(false);
         if (row is null)
         {
             return new ManagerImportResult(false, false, "Weir did not hand this file back, so there is nothing for it to record.");
         }
 
-        // The same message again (a manager retrying its webhook) changes nothing once Weir has settled the copy.
-        if (row.Outcome == HandbackRules.Imported && row.SettledAt is not null)
+        if (!HandbackRules.Hears(row.Outcome, row.SettledAt is not null, row.OutcomeSpeaker, speaker, HandbackRules.Imported, sameHandoff: false))
         {
-            return new ManagerImportResult(true, row.ReleasedAt is not null, row.ReleaseNote ?? string.Empty, row.RelativePath, row.LibraryId);
+            return LeftAlone(row, manager, speaker);
         }
 
         var now = _time.GetUtcNow();
-        await _handback.RecordOutcomeAsync(uow, row.Id, HandbackRules.Imported, manager, now, importEvent.FilePath, null).ConfigureAwait(false);
-        if (row.SettledAt is not null)
+        await _handback.RecordOutcomeAsync(uow, row.Id, HandbackRules.Imported, manager, speaker, now, importEvent.FilePath, null).ConfigureAwait(false);
+        var afterAll = ChangesItsMind(row, speaker, HandbackRules.Imported);
+        if (row.SettledAt is not null && row.Outcome is null)
         {
             // Weir already stopped looking after this copy (the Cleanup job removed it, say): the import is recorded, and
             // what happened to the copy then still stands.
@@ -71,13 +73,30 @@ public sealed class HandbackOutcomes
             return new ManagerImportResult(true, false, row.ReleaseNote ?? string.Empty, row.RelativePath, row.LibraryId);
         }
 
-        var release = authenticated
+        var release = speaker.Authenticated
             ? HandbackStore.Release(row, manager, importEvent.FilePath)
             : new HandbackRelease(HandbackReleaseKind.Kept, HandbackRules.UnsignedNote(manager));
         await _handback.RecordReleaseAsync(uow, row.Id, release, now).ConfigureAwait(false);
-        await RecordActivityAsync(uow, manager, HandbackRules.Imported, row.LibraryId, row.RelativePath, importEvent.FilePath, null, release.Removed, release.Note, "webhook")
+        await RecordActivityAsync(uow, manager, HandbackRules.Imported, row.LibraryId, row.RelativePath, importEvent.FilePath, null, release.Removed, release.Note, "webhook", afterAll)
             .ConfigureAwait(false);
         return new ManagerImportResult(true, release.Removed, release.Note, row.RelativePath, row.LibraryId);
+    }
+
+    /// <summary>
+    /// A message the copy does not take (<see cref="HandbackRules.Hears"/>) changes nothing. The same caller's message again
+    /// (a manager retrying its webhook) gets the answer it got; anyone else's is told only what the copy already says.
+    /// </summary>
+    private static ManagerImportResult LeftAlone(HandbackRow copy, string manager, ManagerSpeaker speaker)
+    {
+        if (!speaker.Authenticated)
+        {
+            return new ManagerImportResult(true, false, HandbackRules.UnsignedNote(manager), copy.RelativePath, copy.LibraryId);
+        }
+
+        var released = copy.ReleasedAt is not null;
+        return copy.Outcome == HandbackRules.Imported && speaker.IsSameCallerAs(copy.OutcomeSpeaker)
+            ? new ManagerImportResult(true, released, copy.ReleaseNote ?? string.Empty, copy.RelativePath, copy.LibraryId)
+            : new ManagerImportResult(true, false, HandbackRules.StandingNote(released), copy.RelativePath, copy.LibraryId);
     }
 
     /// <summary>
@@ -85,8 +104,13 @@ public sealed class HandbackOutcomes
     /// that Weir's completion report actually named (<see cref="HandoffTargetStore.ReportedCopiesAsync"/>) — a file the
     /// hand-off covers but that never finished, or finished after the report went out, was never named to the manager, so
     /// its copy is left untouched. <c>imported</c> releases each named copy by the shared rule; <c>not-imported</c> keeps
-    /// every one. An <c>imported</c> that replaces an earlier <c>not-imported</c> (<see cref="HandbackRules.Supersedes"/>)
-    /// releases the copies that refusal kept by the same rule, and says in Activity that the manager imported it after all.
+    /// every one. Several hand-offs of one file share its copy, so what the copy says is only ever what the latest word on it
+    /// was. Whether a copy takes a word is <see cref="HandbackRules.Hears"/>'s to say, by who spoke (the kind of manager and its
+    /// connection, not its display name) and by whether the report named this generation of the copy: an <c>imported</c>
+    /// releases a copy a <c>not-imported</c> kept, whoever refused (and Activity says it imported it after all when the same kind of
+    /// manager had refused), a <c>not-imported</c> never changes a copy that has been imported, and a refusal replaces only the same
+    /// connection's refusal. The reply is built from what this outcome did to the copies
+    /// it names, never from another outcome's note.
     /// </summary>
     public async Task<HandoffOutcomeResult> RecordHandoffOutcomeAsync(
         UnitOfWork uow, HandoffLedgerRow row, string manager, string outcome, DateTimeOffset occurredAt, string? importedPath, string? reason)
@@ -94,26 +118,49 @@ public sealed class HandbackOutcomes
         ArgumentNullException.ThrowIfNull(uow);
         ArgumentNullException.ThrowIfNull(row);
         var now = _time.GetUtcNow();
-        var afterAll = HandbackRules.Supersedes(row.Outcome, outcome);
+        var speaker = new ManagerSpeaker(row.SourceKey, row.ConnectionId, Authenticated: true);
+        var supersedes = HandbackRules.Supersedes(row.Outcome, outcome);
+        var afterAll = false;
         int removed = 0, gone = 0, kept = 0;
         string? firstKeptNote = null;
+        string? importedBy = null;
         var named = new List<string>();
         if (row.LibraryId is { } libraryId)
         {
             var wasReported = await _targets.ReportedCopiesAsync(uow, row).ConfigureAwait(false);
-            foreach (var file in await HandoffLedgerStore.FileRowsAsync(uow, row).ConfigureAwait(false))
+            foreach (var path in await HandoffLedgerStore.CoveredPathsAsync(uow, row).ConfigureAwait(false))
             {
-                var copy = await _handback.FindAsync(uow, libraryId, file.RelativePath).ConfigureAwait(false);
+                var copy = await _handback.FindAsync(uow, libraryId, path).ConfigureAwait(false);
                 if (copy is null || !wasReported(copy))
                 {
                     continue;
                 }
 
                 named.Add(copy.RelativePath);
-                await _handback.RecordOutcomeAsync(uow, copy.Id, outcome, manager, occurredAt, importedPath, reason).ConfigureAwait(false);
-                // Already settled (Cleanup removed it, Sonarr's own webhook got there first): keep what happened then. The one
-                // settling an import after all undoes is this manager's own "will not import".
-                var settled = copy.SettledAt is not null && !(afterAll && KeptByRefusal(copy, manager));
+                // This hand-off's own refusal is its to take back, as long as it is still the word on the copy.
+                var sameHandoff = supersedes && (copy.OutcomeSpeaker is null || copy.OutcomeSpeaker.IsSameCallerAs(speaker));
+                if (!HandbackRules.Hears(copy.Outcome, copy.SettledAt is not null, copy.OutcomeSpeaker, speaker, outcome, sameHandoff))
+                {
+                    // Another word stands on this copy, and it is not this one's to change. The reply says what the copy says,
+                    // never the note that word left on it.
+                    if (outcome == HandbackRules.NotImported && copy.Outcome == HandbackRules.Imported)
+                    {
+                        importedBy ??= copy.OutcomeBy;
+                    }
+                    else
+                    {
+                        kept++;
+                        firstKeptNote ??= HandbackRules.StandingNote(copy.ReleasedAt is not null);
+                    }
+
+                    continue;
+                }
+
+                afterAll |= ChangesItsMind(copy, speaker, outcome);
+                await _handback.RecordOutcomeAsync(uow, copy.Id, outcome, manager, speaker, occurredAt, importedPath, reason).ConfigureAwait(false);
+                // Settled with nobody's word on it (Cleanup removed it): keep what happened then. A copy that has a word on it
+                // and was heard again is looked at afresh.
+                var settled = copy.SettledAt is not null && copy.Outcome is null;
                 HandbackRelease release;
                 if (settled)
                 {
@@ -156,8 +203,9 @@ public sealed class HandbackOutcomes
             }
         }
 
+        afterAll |= supersedes && named.Count == 0;
         var released = outcome == HandbackRules.Imported && removed > 0 && kept == 0;
-        var message = HandbackRules.OutcomeMessage(manager, outcome, removed, gone, kept, firstKeptNote);
+        var message = HandbackRules.OutcomeMessage(manager, outcome, removed, gone, kept, firstKeptNote, importedBy);
         await _ledger.RecordManagerOutcomeAsync(uow, row.Id, outcome, occurredAt, message, released).ConfigureAwait(false);
         // A hand-off of one delivered file in a folder is about that file; the folder's name says nothing about which one it was.
         var subject = named.Count == 1 ? named[0] : row.RelativePath;
@@ -165,6 +213,11 @@ public sealed class HandbackOutcomes
             .ConfigureAwait(false);
         return new HandoffOutcomeResult(released, message);
     }
+
+    /// <summary>An import that lifts a refusal the same kind of manager made: it had said it would not import the file, and did after all.</summary>
+    private static bool ChangesItsMind(HandbackRow copy, ManagerSpeaker speaker, string outcome) =>
+        outcome == HandbackRules.Imported && copy.Outcome == HandbackRules.NotImported &&
+        (copy.OutcomeSpeaker is null || string.Equals(copy.OutcomeSpeaker.SourceKey, speaker.SourceKey, StringComparison.Ordinal));
 
     /// <summary>
     /// Whether the hand-off's report named a copy the manager has said nothing about yet: a retry that finished after the manager
@@ -180,9 +233,9 @@ public sealed class HandbackOutcomes
         }
 
         var wasReported = await _targets.ReportedCopiesAsync(uow, row).ConfigureAwait(false);
-        foreach (var file in await HandoffLedgerStore.FileRowsAsync(uow, row).ConfigureAwait(false))
+        foreach (var path in await HandoffLedgerStore.CoveredPathsAsync(uow, row).ConfigureAwait(false))
         {
-            if (await _handback.FindAsync(uow, libraryId, file.RelativePath).ConfigureAwait(false) is { Outcome: null } copy && wasReported(copy))
+            if (await _handback.FindAsync(uow, libraryId, path).ConfigureAwait(false) is { Outcome: null } copy && wasReported(copy))
             {
                 return true;
             }
@@ -190,10 +243,6 @@ public sealed class HandbackOutcomes
 
         return false;
     }
-
-    /// <summary>The copy was kept by this manager's "will not import", the one settling an import after all undoes.</summary>
-    private static bool KeptByRefusal(HandbackRow copy, string manager) =>
-        copy.Outcome == HandbackRules.NotImported && string.Equals(copy.OutcomeBy, manager, StringComparison.Ordinal);
 
     /// <summary>
     /// The copy a manager's "imported" is about. First by <c>sourcePath</c>: Weir's own path for the copy, or a path that
@@ -226,9 +275,9 @@ public sealed class HandbackOutcomes
                     continue;
                 }
 
-                foreach (var file in await HandoffLedgerStore.FileRowsAsync(uow, handoff).ConfigureAwait(false))
+                foreach (var path in await HandoffLedgerStore.CoveredPathsAsync(uow, handoff).ConfigureAwait(false))
                 {
-                    if (await _handback.FindAsync(uow, libraryId, file.RelativePath).ConfigureAwait(false) is { } copy)
+                    if (await _handback.FindAsync(uow, libraryId, path).ConfigureAwait(false) is { } copy)
                     {
                         found.Add(copy);
                     }

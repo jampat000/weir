@@ -136,8 +136,10 @@ public interface IProcessRunner
 }
 
 /// <summary><see cref="IProcessRunner"/> over <see cref="Process"/>, for Windows and Linux.</summary>
-public sealed partial class ProcessRunner(ILogger<ProcessRunner>? logger = null, ToolProcessLedger? tools = null) : IProcessRunner
+public sealed partial class ProcessRunner(ILogger<ProcessRunner>? logger = null, ToolProcessLedger? tools = null, TimeProvider? time = null) : IProcessRunner
 {
+    private readonly TimeProvider _time = time ?? TimeProvider.System;
+
     /// <summary>
     /// How long to wait for pipes to drain after a kill before giving up on them. Internal (not private)
     /// so tests can size their own wall-clock assertions off the real allowance instead of guessing one.
@@ -187,7 +189,7 @@ public sealed partial class ProcessRunner(ILogger<ProcessRunner>? logger = null,
         }
 
         using var timeoutSource = request.Timeout is { } timeout ? new CancellationTokenSource(timeout) : new CancellationTokenSource();
-        using var idle = new IdleWatch(request.IdleTimeout);
+        using var idle = new IdleWatch(request.IdleTimeout, _time);
         using var lateExit = new CancellationTokenSource();
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutSource.Token, idle.Token, lateExit.Token);
         var anyOutputIsProgress = request.MarksProgress is null;
@@ -375,16 +377,19 @@ public sealed partial class ProcessRunner(ILogger<ProcessRunner>? logger = null,
     /// </summary>
     private sealed class IdleWatch : IDisposable
     {
-        private readonly CancellationTokenSource _source = new();
+        private readonly CancellationTokenSource _source;
+        private readonly TimeProvider _time;
         private readonly TimeSpan? _limit;
         private long _pushedAt;
 
-        public IdleWatch(TimeSpan? limit)
+        public IdleWatch(TimeSpan? limit, TimeProvider time)
         {
             _limit = limit;
+            _time = time;
+            _source = new CancellationTokenSource(Timeout.InfiniteTimeSpan, time);
             if (limit is { } span)
             {
-                _pushedAt = Stopwatch.GetTimestamp();
+                _pushedAt = _time.GetTimestamp();
                 _source.CancelAfter(span);
             }
         }
@@ -398,8 +403,8 @@ public sealed partial class ProcessRunner(ILogger<ProcessRunner>? logger = null,
                 return;
             }
 
-            var now = Stopwatch.GetTimestamp();
-            if (Stopwatch.GetElapsedTime(Volatile.Read(ref _pushedAt), now) < limit / 20)
+            var now = _time.GetTimestamp();
+            if (_time.GetElapsedTime(Volatile.Read(ref _pushedAt), now) < limit / 20)
             {
                 return;
             }

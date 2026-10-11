@@ -85,9 +85,9 @@ public sealed class ProcessingRequeueApiTests
             ("$lib", libraryId), ("$path", relativePath), ("$size", fingerprint.SizeBytes), ("$mtime", fingerprint.ModifiedTimeNs));
         await TestDatabase.ExecuteAsync(
             server,
-            "INSERT INTO handbacks (library_id, relative_path, output_path, output_size, output_mtime_ns, written_at) " +
-            "VALUES ($lib, $path, $output, 7, 0, CURRENT_TIMESTAMP)",
-            ("$lib", libraryId), ("$path", relativePath), ("$output", output));
+            "INSERT INTO handbacks (library_id, relative_path, output_path, output_size, output_mtime_ns, written_at, source_size, source_mtime_ns) " +
+            "VALUES ($lib, $path, $output, 7, 0, CURRENT_TIMESTAMP, $size, $mtime)",
+            ("$lib", libraryId), ("$path", relativePath), ("$output", output), ("$size", fingerprint.SizeBytes), ("$mtime", fingerprint.ModifiedTimeNs));
         return (fileId, source);
     }
 

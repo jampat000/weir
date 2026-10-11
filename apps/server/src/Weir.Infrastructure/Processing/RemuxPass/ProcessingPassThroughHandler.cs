@@ -57,7 +57,7 @@ public sealed class ProcessingPassThroughHandler : IJobHandler
     /// <summary>Test seam: how long a file that was not there is given to come back before Weir believes it is gone.</summary>
     internal TimeSpan GoneSettle { get; init; } = GoneSources.DefaultSettle;
 
-    private const string GoneLooksKey = "gone_looks";
+    private const string GoneLooksKey = GoneLooks.Key;
 
     public string JobKind => IntakeRules.PassThroughJobKind;
 
@@ -177,7 +177,7 @@ public sealed class ProcessingPassThroughHandler : IJobHandler
         string status;
         await using (uow.ConfigureAwait(false))
         {
-            status = await _reporter.ReportHandoffCompletionAsync(uow, reportPayload, reportResult, cancellationToken).ConfigureAwait(false);
+            status = await _reporter.ReportHandoffCompletionAsync(uow, reportPayload, reportResult, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
         _logger.LogInformation("Pass-through hand-off report: {Status}", status);

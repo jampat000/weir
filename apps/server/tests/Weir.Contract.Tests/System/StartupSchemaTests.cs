@@ -274,6 +274,11 @@ public sealed class StartupSchemaTests(StartupSchemaTests.HeadSchemaFixture fixt
         SeedSql.Execute(connection, "ALTER TABLE media_manager_handoff_targets DROP COLUMN output_written_at");
         SeedSql.Execute(connection, "ALTER TABLE files DROP COLUMN skip_kind");
         SeedSql.Execute(connection, "DROP INDEX ix_activity_events_current");
+        SeedSql.Execute(connection, "ALTER TABLE handbacks DROP COLUMN source_size");
+        SeedSql.Execute(connection, "ALTER TABLE handbacks DROP COLUMN source_mtime_ns");
+        SeedSql.Execute(connection, "ALTER TABLE handbacks DROP COLUMN outcome_source_key");
+        SeedSql.Execute(connection, "ALTER TABLE handbacks DROP COLUMN outcome_connection_id");
+        SeedSql.Execute(connection, "ALTER TABLE handbacks DROP COLUMN outcome_authenticated");
     }
 
     /// <summary>

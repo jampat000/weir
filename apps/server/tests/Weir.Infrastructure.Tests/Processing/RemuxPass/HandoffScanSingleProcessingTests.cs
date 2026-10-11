@@ -315,16 +315,18 @@ public sealed class HandoffScanSingleProcessingTests : IDisposable
     }
 
     [Fact]
-    public async Task A_second_hand_off_for_a_file_another_hand_off_already_queued_does_not_take_it_over()
+    public async Task A_second_hand_off_for_a_file_another_hand_off_already_queued_takes_it_over_and_the_first_is_closed_as_replaced()
     {
         await SetUpAsync();
         await HandOffAsync("h1");
         await HandOffAsync("h2");
 
         Assert.Equal(1, await RemuxJobCountAsync());
-        Assert.Equal(IntakeRules.RemuxDedupeKey("deluno", "h1"), await ScalarText("SELECT dedupe_key FROM jobs WHERE job_kind = 'processing.file.remux_pass.v1'"));
-        // The second hand-off is recorded and answers from the file's own state rather than from nothing.
+        Assert.Equal(IntakeRules.RemuxDedupeKey("deluno", "h2"), await ScalarText("SELECT dedupe_key FROM jobs WHERE job_kind = 'processing.file.remux_pass.v1'"));
         Assert.Equal("queued", (await HandoffStatusAsync("h2")).State);
+        var replaced = await HandoffStatusAsync("h1");
+        Assert.Equal("cancelled", replaced.State);
+        Assert.Equal(CompletionReports.SupersededMessage, replaced.Message);
     }
 
     [Fact]

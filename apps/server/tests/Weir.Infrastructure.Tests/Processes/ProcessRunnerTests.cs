@@ -185,13 +185,18 @@ public sealed class ProcessRunnerTests
     [Fact]
     public async Task A_process_that_keeps_talking_is_left_to_run_for_longer_than_the_idle_limit()
     {
+        using var child = new PacedChild();
         var lines = new List<string>();
 
-        // 40 lines 100 ms apart run for about four seconds, over the three-second limit, but never fall silent for it.
-        var result = await Runner.RunAsync(new ProcessRequest
+        // 40 lines 100 ms apart run for four seconds of the limit's clock, over the three-second limit, but never fall silent for it.
+        var result = await child.Runner.RunAsync(new ProcessRequest
         {
-            Argv = [StandInPath, "chatter", "100", "40"],
-            OnStdoutLine = lines.Add,
+            Argv = [StandInPath, "chatter", child.Pace, "40"],
+            OnStdoutLine = line =>
+            {
+                lines.Add(line);
+                child.Tick(TimeSpan.FromMilliseconds(100), lines.Count);
+            },
             IdleTimeout = TimeSpan.FromSeconds(3),
             Timeout = TimeSpan.FromMinutes(5),
         });
@@ -204,14 +209,23 @@ public sealed class ProcessRunnerTests
     [Fact]
     public async Task A_process_that_stops_talking_part_way_is_killed_by_the_idle_limit_and_what_it_said_is_kept()
     {
+        using var child = new PacedChild();
         var lines = new List<string>();
         using var started = new StartedProcesses();
 
-        var result = await Runner.RunAsync(new ProcessRequest
+        // The fifth line is the last: once it is in, the limit's clock moves on past the limit with nothing more said.
+        var result = await child.Runner.RunAsync(new ProcessRequest
         {
             Argv = [StandInPath, "chatter-then-stall", "50", "5"],
             OnStarted = started.Remember,
-            OnStdoutLine = lines.Add,
+            OnStdoutLine = line =>
+            {
+                lines.Add(line);
+                if (lines.Count == 5)
+                {
+                    child.Tick(TimeSpan.FromSeconds(3), lines.Count);
+                }
+            },
             IdleTimeout = TimeSpan.FromSeconds(2),
             Timeout = TimeSpan.FromMinutes(5),
         });
@@ -246,14 +260,21 @@ public sealed class ProcessRunnerTests
     [Fact]
     public async Task A_process_whose_progress_lines_advance_is_left_to_run_past_the_idle_limit()
     {
+        using var child = new PacedChild();
         var advance = new Weir.Core.Media.FfmpegProgressAdvance();
-        var lines = new List<string>();
+        var blocks = 0;
 
-        // Forty blocks 100 ms apart run for about four seconds, over the three-second limit, and each moves on.
-        var result = await Runner.RunAsync(new ProcessRequest
+        // Forty blocks 100 ms apart run for four seconds of the limit's clock, over the three-second limit, and each moves on.
+        var result = await child.Runner.RunAsync(new ProcessRequest
         {
-            Argv = [StandInPath, "progress-advancing", "100", "40"],
-            OnStdoutLine = lines.Add,
+            Argv = [StandInPath, "progress-advancing", child.Pace, "40"],
+            OnStdoutLine = line =>
+            {
+                if (line.StartsWith("progress=", StringComparison.Ordinal))
+                {
+                    child.Tick(TimeSpan.FromMilliseconds(100), ++blocks);
+                }
+            },
             MarksProgress = advance.Feed,
             IdleTimeout = TimeSpan.FromSeconds(3),
             Timeout = TimeSpan.FromMinutes(5),

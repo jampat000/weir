@@ -37,12 +37,16 @@ public static class ActiveRemuxPasses
     }
 
     /// <summary>Whether a pending or leased pass other than <paramref name="excludeJobId"/> names this file.</summary>
-    public static async Task<bool> ExistsForRelativePathAsync(UnitOfWork uow, string relativePosix, string mediaScope, long? libraryId, long? excludeJobId = null)
+    public static async Task<bool> ExistsForRelativePathAsync(UnitOfWork uow, string relativePosix, string mediaScope, long? libraryId, long? excludeJobId = null) =>
+        (await ForRelativePathAsync(uow, relativePosix, mediaScope, libraryId).ConfigureAwait(false)).Any(job => job.Id != excludeJobId);
+
+    /// <summary>The pending or leased passes for this file, oldest first.</summary>
+    internal static async Task<IReadOnlyList<ProcessingJob>> ForRelativePathAsync(UnitOfWork uow, string relativePosix, string mediaScope, long? libraryId)
     {
         ArgumentNullException.ThrowIfNull(uow);
         var wantScope = ProcessingMediaScopes.Normalize(mediaScope);
         var jobs = await uow.QueryAsync(ForPathSql, ProcessingJobStore.ReadJob, ("@path", relativePosix)).ConfigureAwait(false);
-        return jobs.Any(job => job.Id != excludeJobId && PayloadNamesFile(job.PayloadJson, relativePosix, wantScope, libraryId));
+        return [.. jobs.Where(job => PayloadNamesFile(job.PayloadJson, relativePosix, wantScope, libraryId))];
     }
 
     /// <summary>The relative path of every file in the library and scope with a pass pending or leased, read once for a whole scan.</summary>

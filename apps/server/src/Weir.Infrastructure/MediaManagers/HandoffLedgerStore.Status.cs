@@ -51,10 +51,7 @@ public sealed partial class HandoffLedgerStore
         var prefix = path + "/";
         var underPath = rows.Where(file => string.Equals(file.RelativePath, path, comparison) || file.RelativePath.StartsWith(prefix, comparison)).ToList();
 
-        var covered = await uow.QueryAsync(
-            "SELECT relative_path FROM media_manager_handoff_targets WHERE handoff_row_id = $row",
-            reader => SqliteValues.GetString(reader, 0),
-            ("$row", row.Id)).ConfigureAwait(false);
+        var covered = await TargetPathsAsync(uow, row).ConfigureAwait(false);
         if (covered.Count == 0)
         {
             return underPath;
@@ -63,6 +60,31 @@ public sealed partial class HandoffLedgerStore
         var coveredPaths = new HashSet<string>(covered, OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
         return [.. underPath.Where(file => coveredPaths.Contains(file.RelativePath))];
     }
+
+    /// <summary>
+    /// The paths of the files this hand-off covers, whether or not each still has a row in the list: a file taken off the list
+    /// is still one the manager was handed and may still answer for. A hand-off that records no files of its own covers its own
+    /// path and every file listed under it.
+    /// </summary>
+    public static async Task<List<string>> CoveredPathsAsync(UnitOfWork uow, HandoffLedgerRow row)
+    {
+        ArgumentNullException.ThrowIfNull(uow);
+        ArgumentNullException.ThrowIfNull(row);
+        var targets = await TargetPathsAsync(uow, row).ConfigureAwait(false);
+        if (targets.Count > 0)
+        {
+            return targets;
+        }
+
+        var comparer = OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        return [.. new[] { row.RelativePath.TrimEnd('/') }.Concat((await FileRowsAsync(uow, row).ConfigureAwait(false)).Select(file => file.RelativePath)).Distinct(comparer)];
+    }
+
+    private static Task<List<string>> TargetPathsAsync(UnitOfWork uow, HandoffLedgerRow row) =>
+        uow.QueryAsync(
+            "SELECT relative_path FROM media_manager_handoff_targets WHERE handoff_row_id = $row",
+            reader => SqliteValues.GetString(reader, 0),
+            ("$row", row.Id));
 
     /// <summary>
     /// Pending or leased jobs keyed to this hand-off, or the failure-policy jobs for its files.

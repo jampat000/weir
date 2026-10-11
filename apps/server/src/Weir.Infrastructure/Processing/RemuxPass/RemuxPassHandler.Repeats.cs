@@ -39,6 +39,7 @@ public sealed partial class RemuxPassHandler
                 if (earlier is not null)
                 {
                     await CleanedSources.RecordSkipAsync(uow, library.Id, rel, earlier, trigger).ConfigureAwait(false);
+                    await CleanedSources.SettleRowAsync(uow, library.Id, rel, earlier, _time.GetUtcNow()).ConfigureAwait(false);
                     workflowId = library.Id;
                     outputFolder = string.IsNullOrWhiteSpace(library.OutputFolder) ? null : RemuxPassPaths.Resolve(library.OutputFolder.Trim());
                 }

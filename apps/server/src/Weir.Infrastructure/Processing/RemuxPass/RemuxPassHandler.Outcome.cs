@@ -138,19 +138,17 @@ public sealed partial class RemuxPassHandler
                         await RemuxPassFileState.ClearFailureFieldsAsync(uow, library.Id, rel).ConfigureAwait(false);
                     }
 
-                    await RemuxPassFileState.RecordProcessedSourceAsync(
-                        uow,
-                        library.Id,
-                        rel,
-                        result.Get("source_fingerprint_size") is WireInteger size ? (long)size.Value : null,
-                        result.Get("source_fingerprint_mtime_ns") is WireInteger mtime ? (long)mtime.Value : null).ConfigureAwait(false);
+                    var sourceSize = result.Get("source_fingerprint_size") is WireInteger size ? (long)size.Value : (long?)null;
+                    var sourceMtime = result.Get("source_fingerprint_mtime_ns") is WireInteger mtime ? (long)mtime.Value : (long?)null;
+                    await RemuxPassFileState.RecordProcessedSourceAsync(uow, library.Id, rel, sourceSize, sourceMtime).ConfigureAwait(false);
 
-                    // #652: exactly which copy this pass handed back, so it can be released safely once a manager has it.
+                    // #652: exactly which copy this pass handed back, so it can be released safely once a manager has it, and the
+                    // source it was cleaned from, so the same source is never cleaned again whatever becomes of the file's row.
                     // Only a copy this pass wrote itself: after a collision skip the file at that path is not Weir's.
                     if (result.Get("output_file") is WireString { Value.Length: > 0 } handedBack &&
                         result.Get("output_collision_action") is WireString { Value: "write" })
                     {
-                        await _handback.RecordWrittenAsync(uow, library.Id, rel, handedBack.Value, now).ConfigureAwait(false);
+                        await _handback.RecordWrittenAsync(uow, library.Id, rel, handedBack.Value, now, sourceSize, sourceMtime).ConfigureAwait(false);
                     }
                 },
                 _logger,

@@ -65,6 +65,41 @@ public static class CompletionReports
 
     public const string SourceGoneMessage = "The download is no longer there, so Weir had nothing to do.";
 
+    /// <summary>The <c>outcome</c> of the result Weir files for a hand-off the manager has since replaced by sending the same release again.</summary>
+    public const string SupersededOutcome = "superseded";
+
+    /// <summary>The <c>failureClass</c> of a report to a replaced hand-off: it settles that hand-off and asks the manager to do nothing.</summary>
+    public const string SupersededFailureClass = "superseded";
+
+    public const string SupersededMessage = "This release was sent again, so Weir is answering the newer send and has nothing to add here.";
+
+    /// <summary>The result that closes a hand-off a newer one for the same file has taken over.</summary>
+    public static WireObject SupersededResult(string relativeMediaPath) =>
+        new WireObject().Set("ok", false).Set("outcome", SupersededOutcome).Set("relative_media_path", relativeMediaPath);
+
+    public static bool IsSuperseded(WireObject result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        return Outcome(result) == SupersededOutcome;
+    }
+
+    /// <summary>The <c>outcome</c> of the result Weir files for a send it did not start, because it is already working on that file for another connection.</summary>
+    public const string NotTakenOutcome = "not_taken";
+
+    public const string NotTakenFailureClass = "not_taken";
+
+    public const string NotTakenMessage = "Weir is already working on this file for another connection, so it did not start this send.";
+
+    /// <summary>The result that answers a send Weir did not take because the file's pass belongs to another connection.</summary>
+    public static WireObject NotTakenResult(string relativeMediaPath) =>
+        new WireObject().Set("ok", false).Set("outcome", NotTakenOutcome).Set("relative_media_path", relativeMediaPath);
+
+    public static bool IsNotTaken(WireObject result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        return Outcome(result) == NotTakenOutcome;
+    }
+
     /// <summary>A pass that ended because its file left the watched folder (and stayed gone).</summary>
     public static bool IsSourceGone(WireObject result)
     {
@@ -108,7 +143,17 @@ public static class CompletionReports
         else
         {
             body.Set("message", MessageFor(result));
-            if (IsSourceGone(result))
+            if (IsSuperseded(result))
+            {
+                body.Set("sourceRemoved", false);
+                body.Set("failureClass", SupersededFailureClass);
+            }
+            else if (IsNotTaken(result))
+            {
+                body.Set("sourceRemoved", false);
+                body.Set("failureClass", NotTakenFailureClass);
+            }
+            else if (IsSourceGone(result))
             {
                 // The one report with no disposition: the download left the watched folder, so there is nothing to hold or reject.
                 body.Set("sourceRemoved", false);
@@ -166,7 +211,7 @@ public static class CompletionReports
     public static string MessageFor(WireObject result)
     {
         ArgumentNullException.ThrowIfNull(result);
-        return IsSucceeded(result) ? SuccessMessage(Outcome(result), result) : IsSourceGone(result) ? SourceGoneMessage : FailureMessage(result);
+        return IsSucceeded(result) ? SuccessMessage(Outcome(result), result) : IsSuperseded(result) ? SupersededMessage : IsNotTaken(result) ? NotTakenMessage : IsSourceGone(result) ? SourceGoneMessage : FailureMessage(result);
     }
 
     private static string SuccessMessage(string outcome, WireObject result)

@@ -109,28 +109,55 @@ public static class FolderHandoffReports
     {
         ArgumentNullException.ThrowIfNull(targets);
         ArgumentNullException.ThrowIfNull(outputFiles);
-        var failed = targets.Where(target => target.Result == HandoffLedgerRules.Failed).ToList();
-        var skipped = targets.Where(target => target.Result == HandoffLedgerRules.Skipped).ToList();
-        var notExtras = skipped.Where(target => !MayBeLeftAlone(target, targets)).ToList();
-        var body = CompletionReports.ReportHeader(origin, failed.Count == 0 && notExtras.Count == 0 ? "completed" : "failed");
-        if (failed.Count == 0 && notExtras.Count == 0)
+        // A file a newer send took over is not this send's to answer for: it is neither done nor failed, and the newer send covers it.
+        var replaced = targets.Where(IsReplaced).ToList();
+        IReadOnlyList<HandoffTarget> own = replaced.Count == 0 ? targets : [.. targets.Where(target => !IsReplaced(target))];
+        var failed = own.Where(target => target.Result == HandoffLedgerRules.Failed).ToList();
+        var skipped = own.Where(target => target.Result == HandoffLedgerRules.Skipped).ToList();
+        var notExtras = skipped.Where(target => !MayBeLeftAlone(target, own)).ToList();
+        var clean = failed.Count == 0 && notExtras.Count == 0;
+        var body = CompletionReports.ReportHeader(origin, clean && replaced.Count == 0 ? "completed" : "failed");
+        if (clean && replaced.Count == 0)
         {
             if (!string.IsNullOrEmpty(outputFolder))
             {
                 body.Set("outputPath", outputFolder);
             }
 
-            body.Set("message", SuccessMessage(targets, skipped));
+            body.Set("message", SuccessMessage(own, skipped));
+        }
+        else if (clean)
+        {
+            // Nothing else went wrong, so the send is replaced as a whole: the newer one answers for the files that were done.
+            body.Set("message", CompletionReports.SupersededMessage)
+                .Set("sourceRemoved", false)
+                .Set("failureClass", CompletionReports.SupersededFailureClass);
+        }
+        else if (failed.Count == own.Count && failed.All(target => target.Message == CompletionReports.NotTakenMessage))
+        {
+            body.Set("message", CompletionReports.NotTakenMessage)
+                .Set("sourceRemoved", false)
+                .Set("failureClass", CompletionReports.NotTakenFailureClass);
         }
         else
         {
-            body.Set("message", FailureMessage(targets, failed, skipped, notExtras))
+            // A real failure stays a failure; the files that were replaced are only mentioned.
+            var message = FailureMessage(own, failed, skipped, notExtras);
+            if (replaced.Count > 0)
+            {
+                message += $" {Plural.Of(replaced.Count, "file")} {Plural.Noun(replaced.Count, "was", "were")} taken over by a newer send.";
+            }
+
+            body.Set("message", message)
                 .Set("disposition", "held")
                 .Set("sourceRemoved", false);
         }
 
         return body.Set("outputFiles", HandoffOutputFiles.ToJson(outputFiles));
     }
+
+    private static bool IsReplaced(HandoffTarget target) =>
+        target.Result == HandoffLedgerRules.Failed && target.Message == CompletionReports.SupersededMessage;
 
     private static string SuccessMessage(IReadOnlyList<HandoffTarget> targets, List<HandoffTarget> skipped)
     {
