@@ -175,7 +175,7 @@ public static class VanishedFiles
     private static Step DecideQueued(WaitingRow row, string watchedRoot) =>
         GoneSourceText.IsHeld(row.Status, row.Reason) && GoneSources.IsBack(watchedRoot, row.RelativePath) ? Step.StartLook : Step.None;
 
-    /// <summary>The library's waiting rows, and the files that have a pass pending or leased, or a pass-through look waiting, which are left to it.</summary>
+    /// <summary>The library's waiting rows, and the files that have a pass pending or leased, or a pass-through pending or leased, which are left to it.</summary>
     private static async Task<(List<WaitingRow> Rows, HashSet<string> Queued)> ReadAsync(
         SqliteDatabase database, long libraryId, string mediaScope, CancellationToken cancellationToken)
     {
@@ -196,7 +196,7 @@ public static class VanishedFiles
                     reader.GetInt64(5) != 0),
                 [("@lib", libraryId), .. statuses]).ConfigureAwait(false);
             var queued = await ActiveRemuxPasses.PathsAsync(uow, mediaScope, libraryId).ConfigureAwait(false);
-            queued.UnionWith(await GoneLooks.WaitingPassThroughPathsAsync(uow, libraryId).ConfigureAwait(false));
+            queued.UnionWith(await GoneLooks.ActivePassThroughPathsAsync(uow, libraryId).ConfigureAwait(false));
             return (rows, queued);
         }
     }

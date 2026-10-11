@@ -22,6 +22,10 @@ internal static class GoneLooks
         "UPDATE jobs SET not_before = NULL, updated_at = CURRENT_TIMESTAMP " +
         "WHERE id = @id AND status = '" + ProcessingJobStatus.Pending + "' AND not_before IS NOT NULL";
 
+    private const string ActivePassThroughSql =
+        $"SELECT {ProcessingJobStore.JobColumns} FROM jobs WHERE job_kind = '" + IntakeRules.PassThroughJobKind + "' AND status IN ('" +
+        ProcessingJobStatus.Pending + "', '" + ProcessingJobStatus.Leased + "')";
+
     private const string WaitingPassThroughSql =
         $"SELECT {ProcessingJobStore.JobColumns} FROM jobs WHERE job_kind = '" + IntakeRules.PassThroughJobKind + "' AND status = '" +
         ProcessingJobStatus.Pending + "' AND not_before IS NOT NULL";
@@ -55,13 +59,13 @@ internal static class GoneLooks
     public static bool StartIfWaiting(SqliteConnection connection, SqliteTransaction transaction, ProcessingJob pass) =>
         IsWaiting(pass) && ProcessingJobStore.Execute(connection, transaction, StartSql, ("@id", pass.Id)) > 0;
 
-    /// <summary>The path of every file in the library with a pass-through look waiting at it.</summary>
-    public static async Task<HashSet<string>> WaitingPassThroughPathsAsync(UnitOfWork uow, long libraryId)
+    /// <summary>The path of every file in the library with a pass-through pending or leased: waiting for its look, started or running.</summary>
+    public static async Task<HashSet<string>> ActivePassThroughPathsAsync(UnitOfWork uow, long libraryId)
     {
         ArgumentNullException.ThrowIfNull(uow);
-        var looks = await uow.QueryAsync(WaitingPassThroughSql, ProcessingJobStore.ReadJob).ConfigureAwait(false);
+        var looks = await uow.QueryAsync(ActivePassThroughSql, ProcessingJobStore.ReadJob).ConfigureAwait(false);
         var paths = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var look in looks.Where(IsWaiting))
+        foreach (var look in looks)
         {
             var payload = FollowUpJobPayload.Parse(look.PayloadJson);
             if (FollowUpJobPayload.LibraryId(payload) == libraryId)

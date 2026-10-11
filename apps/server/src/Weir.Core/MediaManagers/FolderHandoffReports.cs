@@ -122,11 +122,19 @@ public static class FolderHandoffReports
 
             body.Set("message", SuccessMessage(targets, skipped));
         }
-        else if (failed.Count == targets.Count && failed.All(target => target.Message == CompletionReports.SupersededMessage))
+        else if (failed.Any(target => target.Message == CompletionReports.SupersededMessage))
         {
+            // A send some of whose files a newer send took over is replaced as a whole: the newer one covers the files that were done.
             body.Set("message", CompletionReports.SupersededMessage)
                 .Set("sourceRemoved", false)
                 .Set("failureClass", CompletionReports.SupersededFailureClass);
+        }
+        else if (failed.Count == targets.Count && failed.All(target => target.Message == CompletionReports.NotTakenMessage))
+        {
+            body.Set("message", CompletionReports.NotTakenMessage)
+                .Set("disposition", "held")
+                .Set("sourceRemoved", false)
+                .Set("failureClass", CompletionReports.NotTakenFailureClass);
         }
         else
         {

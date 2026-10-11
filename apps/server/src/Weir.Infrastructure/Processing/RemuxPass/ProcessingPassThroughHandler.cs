@@ -177,7 +177,7 @@ public sealed class ProcessingPassThroughHandler : IJobHandler
         string status;
         await using (uow.ConfigureAwait(false))
         {
-            status = await _reporter.ReportHandoffCompletionAsync(uow, reportPayload, reportResult, cancellationToken).ConfigureAwait(false);
+            status = await _reporter.ReportHandoffCompletionAsync(uow, reportPayload, reportResult, cancellationToken: cancellationToken).ConfigureAwait(false);
         }
 
         _logger.LogInformation("Pass-through hand-off report: {Status}", status);

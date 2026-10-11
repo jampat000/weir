@@ -22,7 +22,7 @@ public sealed partial class HandoffCompletionReporter
     /// Never throws: a manager being unreachable must not fail a pass that succeeded on disk.
     /// </summary>
     private async Task<string> ClaimAndDeliverAsync(
-        UnitOfWork uow, HandoffOrigin origin, HandoffTargetFinish finish, WireObject? result, long? libraryId, bool viaCancellation, CancellationToken cancellationToken)
+        UnitOfWork uow, HandoffOrigin origin, HandoffTargetFinish finish, WireObject? result, long? libraryId, bool viaCancellation, bool deliverNow, CancellationToken cancellationToken)
     {
         var staged = await StageReadyReportAsync(uow, origin, finish, result, libraryId, viaCancellation, cancellationToken).ConfigureAwait(false);
         if (staged is not { } ready)
@@ -46,6 +46,11 @@ public sealed partial class HandoffCompletionReporter
         if (ready.Target is null)
         {
             return $"skipped: {ready.SkipReason}";
+        }
+
+        if (!deliverNow)
+        {
+            return "queued: the report is owed and goes out with the next delivery";
         }
 
         var delivery = await DeliverOwedReportAsync(uow, origin.SourceKey, origin.HandoffId!, ready.Target, owed!, cancellationToken).ConfigureAwait(false);
@@ -142,9 +147,9 @@ public sealed partial class HandoffCompletionReporter
             : null;
     }
 
-    /// <summary>A report to a send the manager replaced by sending the same release again, which ends that send as cancelled.</summary>
+    /// <summary>A report that ends a send Weir will not do: one the manager replaced by sending the same release again, or one for a file Weir is working on for another manager. Such a send reads as cancelled.</summary>
     private static bool IsSupersededReport(WireObject body) =>
-        body.Get("failureClass") is WireString { Value: CompletionReports.SupersededFailureClass };
+        body.Get("failureClass") is WireString { Value: CompletionReports.SupersededFailureClass or CompletionReports.NotTakenFailureClass };
 
     /// <summary>The ledger state a one-file report means.</summary>
     private static string FileReportState(WireObject body)

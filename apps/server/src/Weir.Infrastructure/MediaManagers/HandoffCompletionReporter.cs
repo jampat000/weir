@@ -62,7 +62,12 @@ public sealed partial class HandoffCompletionReporter
             return (null, "the hand-off named no callback path");
         }
 
-        var connection = await _connectionStore.FirstEnabledForKindAsync(uow, origin.SourceKey).ConfigureAwait(false);
+        // The connection that sent the hand-off is the one that is told how it ended; a second connection of the same kind is not.
+        var owner = string.IsNullOrEmpty(origin.HandoffId) ? null : await HandoffLedgerStore.FindAsync(uow, origin.SourceKey, origin.HandoffId).ConfigureAwait(false);
+        var connection = owner?.ConnectionId is { } owningId &&
+                         await _connectionStore.GetAsync(uow, owningId).ConfigureAwait(false) is { Enabled: true } owning && owning.Kind == origin.SourceKey
+            ? owning
+            : await _connectionStore.FirstEnabledForKindAsync(uow, origin.SourceKey).ConfigureAwait(false);
         if (connection is null)
         {
             return (null, $"no enabled {origin.SourceKey} connection is configured to report back to");
@@ -172,6 +177,10 @@ public sealed partial class HandoffCompletionReporter
         {
             title = $"Told {name} that its newer send of {fileName} has the answer";
         }
+        else if (body.Get("failureClass") is WireString { Value: CompletionReports.NotTakenFailureClass })
+        {
+            title = $"Told {name} that Weir did not start {fileName}, because it is working on it for another media manager";
+        }
         else
         {
             title = $"Told {name} that Weir could not process {fileName}";
@@ -211,7 +220,8 @@ public sealed partial class HandoffCompletionReporter
     /// </para>
     /// Commits <paramref name="uow"/> (or rolls it back when recording fails).
     /// </summary>
-    public async Task<string> ReportHandoffCompletionAsync(UnitOfWork uow, string? payloadJson, WireObject result, CancellationToken cancellationToken = default)
+    public async Task<string> ReportHandoffCompletionAsync(
+        UnitOfWork uow, string? payloadJson, WireObject result, bool deliverNow = true, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(uow);
         ArgumentNullException.ThrowIfNull(result);
@@ -286,7 +296,7 @@ public sealed partial class HandoffCompletionReporter
             case HandoffTargetProgress.Untracked:
                 return await ReportUntrackedFileAsync(uow, origin, result, relative, libraryId, cancellationToken).ConfigureAwait(false);
             default:
-                return await ClaimAndDeliverAsync(uow, origin, finish, result, libraryId, viaCancellation: false, cancellationToken).ConfigureAwait(false);
+                return await ClaimAndDeliverAsync(uow, origin, finish, result, libraryId, viaCancellation: false, deliverNow, cancellationToken).ConfigureAwait(false);
         }
     }
 

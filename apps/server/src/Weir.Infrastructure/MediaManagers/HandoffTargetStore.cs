@@ -98,7 +98,12 @@ public sealed class HandoffTargetStore
             "UPDATE media_manager_handoff_targets SET result = $result, output_file = $output, message = $message, " +
             "output_written_at = CASE WHEN $output IS NULL THEN NULL " +
             "ELSE (SELECT written_at FROM handbacks WHERE library_id = $library AND relative_path = $path) END " +
-            "WHERE handoff_row_id = $row AND relative_path = $path",
+            "WHERE handoff_row_id = $row AND relative_path = $path " +
+            // A send that was replaced only ever fills a file that has no result yet, and a file whose send was replaced takes no later one:
+            // that send has had its last answer.
+            "AND (result IS NULL OR ($replacing = 0 AND coalesce(message, '') <> $replacedMessage))",
+            ("$replacing", CompletionReports.IsSuperseded(result) ? 1 : 0),
+            ("$replacedMessage", CompletionReports.SupersededMessage),
             ("$result", FolderHandoffReports.TargetResult(result)),
             ("$output", outputFile),
             ("$message", WireStrings.Slice(CompletionReports.MessageFor(result), 2000)),

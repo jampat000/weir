@@ -242,7 +242,7 @@ public sealed partial class RemuxPassHandler : IJobHandler
         Merge(result, provenance);
         await ApplyFileOutcomeStateAsync(result, libraryId, mediaScope, origin).ConfigureAwait(false);
         await DeferUntilOldEnoughAsync(context.Id, data, origin, result, cancellationToken).ConfigureAwait(false);
-        await LookAgainForGoneFileAsync(context.Id, data, origin, result, cancellationToken).ConfigureAwait(false);
+        await LookAgainForGoneFileAsync(context.Id, data, origin, result, (claim.Runtime!.WatchedFolder, rel, mediaScope, claim.Library?.Id ?? libraryId), cancellationToken).ConfigureAwait(false);
         await RecordAsync(result, progress.ActivityId, newEntry: AddsGoneEntry(result, claim.GoneListed)).ConfigureAwait(false);
 
         await FinishRejectedInputCleanupAsync(result, claim.Library, libraryId, mediaScope, origin).ConfigureAwait(false);
@@ -252,6 +252,15 @@ public sealed partial class RemuxPassHandler : IJobHandler
         }
 
         await ReportBackAsync(payloadJson, result).ConfigureAwait(false);
+
+        // A send that replaced this one while the manager was being told took the pass over too late for the pass to have known. The
+        // replaced send has had its last answer, so the pass answers the new one as well.
+        if (await AdoptedOriginAsync(context.Id, cancellationToken).ConfigureAwait(false) is { } latest && !IsSameHandoff(origin, latest))
+        {
+            origin = latest;
+            await ReportBackAsync(WireJsonWriter.Dumps(data.Copy().Set("origin", latest), WireJsonFormat.Compact), result).ConfigureAwait(false);
+        }
+
         await DownloadedScanAsync(result, mediaScope, origin).ConfigureAwait(false);
     }
 
