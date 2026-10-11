@@ -67,7 +67,7 @@ Click the tray icon to open Weir. Right-click it to pause processing, restart We
 
 Images are published to GitHub's container registry as `ghcr.io/jampat000/weir`, for 64-bit Intel/AMD (`amd64`) and ARM (`arm64`). That covers Synology, Unraid, TrueNAS, Linux servers and a Raspberry Pi running a 64-bit system.
 
-Use a version tag such as `1.0.0-rc.13`. Release candidates are published under their version tag only, so `latest` does not exist yet. It arrives with 1.0.0 and will follow stable releases. The tag has no `v`: the release `v1.0.0-rc.13` is the image `1.0.0-rc.13`. Newer ones are on the [Releases page](https://github.com/jampat000/Weir/releases).
+Use a version tag such as `1.0.0-rc.14`. Release candidates are published under their version tag only, so `latest` does not exist yet. It arrives with 1.0.0 and will follow stable releases. The tag has no `v`: the release `v1.0.0-rc.14` is the image `1.0.0-rc.14`. Newer ones are on the [Releases page](https://github.com/jampat000/Weir/releases).
 
 ### Getting the folders right first
 
@@ -99,7 +99,7 @@ docker run -d \
   -v "$(pwd)/weir-data:/data/weir" \
   -v /srv/media:/media \
   --restart unless-stopped \
-  ghcr.io/jampat000/weir:1.0.0-rc.13
+  ghcr.io/jampat000/weir:1.0.0-rc.14
 ```
 
 Then open `http://<server>:9347`, where `<server>` is the name or address of the machine running Docker.
@@ -115,7 +115,7 @@ This puts a qBittorrent container beside Weir, with the shared folder laid out a
 ```yaml
 services:
   weir:
-    image: ghcr.io/jampat000/weir:1.0.0-rc.13
+    image: ghcr.io/jampat000/weir:1.0.0-rc.14
     container_name: weir
     hostname: my-server
     ports:

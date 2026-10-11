@@ -10,14 +10,14 @@ Weir runs on any machine with Docker, including Synology, Unraid, TrueNAS and Ra
 
 ## The quickest way
 
-Weir is at release-candidate stage, and a release candidate is published under its version tag only, so the examples below name `1.0.0-rc.13`. The `latest` tag arrives with 1.0.0.
+Weir is at release-candidate stage, and a release candidate is published under its version tag only, so the examples below name `1.0.0-rc.14`. The `latest` tag arrives with 1.0.0.
 
 Make a folder, save this as `compose.yaml` inside it:
 
 ```yaml
 services:
   weir:
-    image: ghcr.io/jampat000/weir:1.0.0-rc.13
+    image: ghcr.io/jampat000/weir:1.0.0-rc.14
     container_name: weir
     ports:
       - "9347:9347"
@@ -59,7 +59,7 @@ people want:
 ```yaml
 services:
   weir:
-    image: ghcr.io/jampat000/weir:1.0.0-rc.13
+    image: ghcr.io/jampat000/weir:1.0.0-rc.14
     container_name: weir
     ports:
       - "9347:9347"
@@ -86,7 +86,7 @@ When one app tells another where a file is, that path has to mean the same thing
 ```yaml
 services:
   weir:
-    image: ghcr.io/jampat000/weir:1.0.0-rc.13
+    image: ghcr.io/jampat000/weir:1.0.0-rc.14
     container_name: weir
     ports:
       - "9347:9347"
@@ -146,7 +146,7 @@ folder and that last step becomes an instant move:
 ```yaml
 services:
   weir:
-    image: ghcr.io/jampat000/weir:1.0.0-rc.13
+    image: ghcr.io/jampat000/weir:1.0.0-rc.14
     container_name: weir
     ports:
       - "9347:9347"

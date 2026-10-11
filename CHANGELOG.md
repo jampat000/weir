@@ -10,6 +10,7 @@ Earlier version numbers were retired when Weir restarted at 1.0.0-rc.1. Their hi
 
 ## 1.x
 
+- **1.0.0-rc.14** (2026-10-11). Downloads sent twice get the right answer, a file that comes back is picked up, imported films stay imported, and every release is proven on a clean machine before it is tagged. [notes](docs/release-notes/v1.0.0-rc.14.md) · [release](https://github.com/jampat000/Weir/releases/tag/v1.0.0-rc.14)
 - **1.0.0-rc.13** (2026-10-10). Check, download and apply an update from System › About without waiting for the tray, a checked copy of your data before every update, a frozen ffmpeg stopped after 10 minutes without progress, and files under a workflow's minimum size left out of a hand-off. [notes](docs/release-notes/v1.0.0-rc.13.md) · [release](https://github.com/jampat000/Weir/releases/tag/v1.0.0-rc.13)
 - **1.0.0-rc.12** (2026-10-09). The tray's dot shows Weir's health only, an extra skipped for being too small no longer needs you, files that leave early settle at once, and the first-run port window opens in front. [notes](docs/release-notes/v1.0.0-rc.12.md) · [release](https://github.com/jampat000/Weir/releases/tag/v1.0.0-rc.12)
 - **1.0.0-rc.11** (2026-10-09). The update check works when GitHub limits your network, the tray matches Deluno's, Weir stays quick while it processes, and files deleted or finished by hand-off settle instead of waiting. [notes](docs/release-notes/v1.0.0-rc.11.md) · [release](https://github.com/jampat000/Weir/releases/tag/v1.0.0-rc.11)
