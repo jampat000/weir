@@ -87,6 +87,56 @@ public sealed class HandbackRulesTests
     public void Only_an_import_replaces_a_refusal(string? recorded, string outcome, bool replaces) =>
         Assert.Equal(replaces, HandbackRules.Supersedes(recorded, outcome));
 
+    private static readonly ManagerSpeaker DelunoNas = new("deluno", 1, true);
+    private static readonly ManagerSpeaker DelunoUpstairs = new("deluno", 2, true);
+    private static readonly ManagerSpeaker DelunoUnknown = new("deluno", null, true);
+    private static readonly ManagerSpeaker Radarr = new("radarr", 1, true);
+    private static readonly ManagerSpeaker RadarrUnsigned = new("radarr", 1, false);
+
+    [Theory]
+    // Nobody has spoken for the copy.
+    [InlineData(null, false, "nas", "nas", false, true)]
+    [InlineData(null, false, "nas", "unsigned", false, true)]
+    // A refusal is replaced by the same connection, or by the same hand-off, and by nobody else.
+    [InlineData(HandbackRules.NotImported, true, "nas", "nas", false, true)]
+    [InlineData(HandbackRules.NotImported, true, "nas", "upstairs", false, false)]
+    [InlineData(HandbackRules.NotImported, true, "nas", "radarr", false, false)]
+    [InlineData(HandbackRules.NotImported, true, "nas", "unsigned", false, false)]
+    [InlineData(HandbackRules.NotImported, true, "nas", "unknown", false, false)]
+    [InlineData(HandbackRules.NotImported, true, "nas", "unknown", true, true)]
+    // An import that settled the copy is final; one that could not remove the copy may be retried by a signed word.
+    [InlineData(HandbackRules.Imported, true, "nas", "nas", false, false)]
+    [InlineData(HandbackRules.Imported, true, "nas", "upstairs", false, false)]
+    [InlineData(HandbackRules.Imported, false, "nas", "upstairs", false, true)]
+    [InlineData(HandbackRules.Imported, false, "nas", "unsigned", false, false)]
+    // What an unsigned message recorded is replaced by any signed word, and by no unsigned one.
+    [InlineData(HandbackRules.Imported, true, "unsigned", "radarr", false, true)]
+    [InlineData(HandbackRules.Imported, true, "unsigned", "unsigned", false, false)]
+    public void A_copy_takes_a_word_only_from_the_speaker_whose_it_is_to_change(
+        string? copyOutcome, bool settled, string copySpeaker, string speaker, bool sameHandoff, bool heard)
+    {
+        ManagerSpeaker Named(string name) => name switch
+        {
+            "nas" => DelunoNas,
+            "upstairs" => DelunoUpstairs,
+            "unknown" => DelunoUnknown,
+            "radarr" => Radarr,
+            _ => RadarrUnsigned,
+        };
+
+        Assert.Equal(heard, HandbackRules.Hears(copyOutcome, settled, copyOutcome is null ? null : Named(copySpeaker), Named(speaker), sameHandoff));
+    }
+
+    [Fact]
+    public void Two_connections_of_one_manager_are_two_speakers_and_an_unattributed_one_is_nobodys_twin()
+    {
+        Assert.True(DelunoNas.IsSameConnectionAs(new ManagerSpeaker("deluno", 1, true)));
+        Assert.False(DelunoNas.IsSameConnectionAs(DelunoUpstairs));
+        Assert.False(DelunoUnknown.IsSameConnectionAs(DelunoUnknown));
+        Assert.True(DelunoUnknown.IsSameCallerAs(DelunoUnknown));
+        Assert.False(DelunoNas.IsSameCallerAs(Radarr));
+    }
+
     [Fact]
     public void The_words_say_what_happened_to_the_copy()
     {
@@ -103,8 +153,8 @@ public sealed class HandbackRulesTests
             "Weir recorded that the file will not be imported, and kept its copy.",
             HandbackRules.OutcomeMessage("Deluno", HandbackRules.NotImported, removed: 0, gone: 0, kept: 1, firstKeptNote: null));
         Assert.Equal(
-            "Weir recorded that the file will not be imported. Deluno has already imported it from another hand-off, so Weir left what it recorded about the file as it is.",
-            HandbackRules.OutcomeMessage("Deluno", HandbackRules.NotImported, removed: 0, gone: 0, kept: 0, firstKeptNote: null, alreadyImported: 1));
+            "Weir recorded that the file will not be imported. Radarr has already imported it, so Weir left what it recorded about the file as it is.",
+            HandbackRules.OutcomeMessage("Deluno", HandbackRules.NotImported, removed: 0, gone: 0, kept: 0, firstKeptNote: null, importedBy: "Radarr"));
         Assert.Equal(
             "Deluno had said it would not import this file, and then imported it after all. Weir recorded that Deluno imported the file and released its copy.",
             HandbackRules.AfterAllMessage("Deluno", "Weir recorded that Deluno imported the file and released its copy."));

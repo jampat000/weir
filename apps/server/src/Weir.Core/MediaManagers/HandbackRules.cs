@@ -46,6 +46,40 @@ public static class HandbackRules
     /// </summary>
     public static bool Supersedes(string? recorded, string outcome) => recorded == NotImported && outcome == Imported;
 
+    /// <summary>
+    /// Whether a copy takes a manager's new word, given what it already says. Hand-offs of one file, from several connections and
+    /// several managers, share the copy, so the word on it is one speaker's at a time:
+    /// <list type="bullet">
+    /// <item>a copy nobody has spoken for takes any word;</item>
+    /// <item>a copy only an unsigned message has spoken for takes any signed word, and an unsigned message changes nothing a
+    /// manager has said, since anybody could have sent it;</item>
+    /// <item>an import that has settled the copy is final (an import not yet settled, because Weir could not remove the copy, may be
+    /// retried);</item>
+    /// <item>a "will not import" is replaced only by the same connection's next word (the same hand-off's, or a hand-off of a
+    /// connection Weir can prove is the same one), never by another connection's or another manager's.</item>
+    /// </list>
+    /// </summary>
+    public static bool Hears(string? copyOutcome, bool copySettled, ManagerSpeaker? copySpeaker, ManagerSpeaker speaker, bool sameHandoff)
+    {
+        ArgumentNullException.ThrowIfNull(speaker);
+        if (copyOutcome is null)
+        {
+            return true;
+        }
+
+        if (copySpeaker is { Authenticated: false })
+        {
+            return speaker.Authenticated;
+        }
+
+        if (!speaker.Authenticated)
+        {
+            return false;
+        }
+
+        return copyOutcome == Imported ? !copySettled : sameHandoff || speaker.IsSameConnectionAs(copySpeaker);
+    }
+
     /// <summary>How long an unclaimed copy waits before the Cleanup job may remove it, unless a person changes it.</summary>
     public const int DefaultUnclaimedWindowDays = 14;
 
@@ -156,6 +190,14 @@ public static class HandbackRules
             ? $"{manager} will not import this file. Weir kept its copy in the hand-back folder."
             : $"{manager} will not import this file: {reason.Trim().TrimEnd('.')}. Weir kept its copy in the hand-back folder.";
 
+    /// <summary>Why a word left the copy as it stands: what the copy already says, never the note of the word that put it there.</summary>
+    public static string StandingNote(string copyOutcome, bool released) =>
+        copyOutcome == NotImported
+            ? "Weir kept its copy, because another media manager connection said it will not import this file."
+            : released
+                ? "Weir had already released its copy, so there was nothing for it to remove."
+                : "Weir had already settled its copy, so it left it as it is.";
+
     public static string UnclaimedNote(long days) =>
         $"No media manager imported it within {days} {(days == 1 ? "day" : "days")}, so Weir removed its copy.";
 
@@ -163,12 +205,12 @@ public static class HandbackRules
         "Weir's copy had already left the hand-back folder, so there was nothing to remove.";
 
     /// <summary>What the outcome endpoint says about a hand-off whose files Weir released, kept, or found gone.</summary>
-    public static string OutcomeMessage(string manager, string outcome, int removed, int gone, int kept, string? firstKeptNote, int alreadyImported = 0)
+    public static string OutcomeMessage(string manager, string outcome, int removed, int gone, int kept, string? firstKeptNote, string? importedBy = null)
     {
         if (outcome == NotImported)
         {
-            return alreadyImported > 0 && kept == 0
-                ? $"Weir recorded that the file will not be imported. {manager} has already imported it from another hand-off, so Weir left what it recorded about the file as it is."
+            return importedBy is not null && kept == 0
+                ? $"Weir recorded that the file will not be imported. {importedBy} has already imported it, so Weir left what it recorded about the file as it is."
                 : "Weir recorded that the file will not be imported, and kept its copy.";
         }
 

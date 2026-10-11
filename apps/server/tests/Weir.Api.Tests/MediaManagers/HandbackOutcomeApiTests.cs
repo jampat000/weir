@@ -625,7 +625,7 @@ public sealed partial class HandbackOutcomeApiTests : IDisposable
             Assert.Equal(HttpStatusCode.OK, refused.StatusCode);
         }
 
-        await TestDatabase.ExecuteAsync(server, "UPDATE handbacks SET outcome_by = 'Radarr'");
+        await TestDatabase.ExecuteAsync(server, "UPDATE handbacks SET outcome_by = 'Radarr', outcome_source_key = 'radarr'");
 
         using var imported = await PostOutcomeAsync(server, "h1", DelunoOutcome("imported", "/media/movies/Film/film.mkv", null));
 

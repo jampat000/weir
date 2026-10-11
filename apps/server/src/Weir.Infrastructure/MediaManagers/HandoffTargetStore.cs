@@ -50,11 +50,28 @@ public sealed class HandoffTargetStore
         }
     }
 
-    /// <summary>Forget a finished hand-off's files, so a resend of it starts over.</summary>
-    public Task ClearAsync(UnitOfWork uow, long handoffRowId)
+    /// <summary>
+    /// A hand-off received while another hand-off's pass was already working on the file covers no file of its own and is answered
+    /// from the file's state; it rides on the hand-off that owns the pass, so an answer for it can be tied to the copy that pass
+    /// wrote (<see cref="ReportedCopiesAsync"/>).
+    /// </summary>
+    public Task AddRiderAsync(UnitOfWork uow, long handoffRowId, string relativePath, long ownerRowId)
     {
         ArgumentNullException.ThrowIfNull(uow);
-        return uow.ExecuteAsync("DELETE FROM media_manager_handoff_targets WHERE handoff_row_id = $row", ("$row", handoffRowId));
+        return uow.ExecuteAsync(
+            "INSERT INTO media_manager_handoff_riders (handoff_row_id, relative_path, owner_row_id) VALUES ($row, $path, $owner) " +
+            "ON CONFLICT (handoff_row_id, relative_path) DO UPDATE SET owner_row_id = excluded.owner_row_id",
+            ("$row", handoffRowId),
+            ("$path", relativePath),
+            ("$owner", ownerRowId));
+    }
+
+    /// <summary>Forget a finished hand-off's files, so a resend of it starts over.</summary>
+    public async Task ClearAsync(UnitOfWork uow, long handoffRowId)
+    {
+        ArgumentNullException.ThrowIfNull(uow);
+        await uow.ExecuteAsync("DELETE FROM media_manager_handoff_targets WHERE handoff_row_id = $row", ("$row", handoffRowId)).ConfigureAwait(false);
+        await uow.ExecuteAsync("DELETE FROM media_manager_handoff_riders WHERE handoff_row_id = $row", ("$row", handoffRowId)).ConfigureAwait(false);
     }
 
     /// <summary>The files a hand-off covers, in path order.</summary>
@@ -166,28 +183,43 @@ public sealed class HandoffTargetStore
     /// <summary>
     /// Whether the manager was told about this copy: the hand-off reported the file, naming exactly this copy as Weir wrote
     /// it then. A copy Weir wrote for the same file after that report was never named to the manager, whatever its path.
-    /// A hand-off that records no files of its own named only the one file it was for.
+    /// A file the hand-off rides on another's pass for is named by that hand-off's report. A hand-off that records no
+    /// generation of the copy it was told about (none at all, or a report from before the generation was kept) can only speak for
+    /// a copy nobody has spoken for yet: it cannot be tied to the copy, so it must not change what has been said about it.
     /// </summary>
     public async Task<Func<HandbackRow, bool>> ReportedCopiesAsync(UnitOfWork uow, HandoffLedgerRow row)
     {
         ArgumentNullException.ThrowIfNull(uow);
         ArgumentNullException.ThrowIfNull(row);
         var targets = await ListAsync(uow, row.Id).ConfigureAwait(false);
-        if (targets.Count == 0)
+        var riders = await RidersAsync(uow, row.Id).ConfigureAwait(false);
+        if (targets.Count == 0 && riders.Count == 0)
         {
-            return copy => copy.RelativePath == row.RelativePath;
+            return copy => copy.RelativePath == row.RelativePath && copy.Outcome is null;
         }
 
-        if (row.ReportedStatus is null)
+        var reported = row.ReportedStatus is null ? [] : DeliveredTargets(targets);
+        foreach (var (relativePath, ownerRowId) in riders)
         {
-            return _ => false;
+            if (await uow.ScalarAsync("SELECT reported_status FROM media_manager_handoffs WHERE id = $row", ("$row", ownerRowId)).ConfigureAwait(false) is string)
+            {
+                reported.AddRange(DeliveredTargets(await ListAsync(uow, ownerRowId).ConfigureAwait(false)).Where(target => target.RelativePath == relativePath));
+            }
         }
 
-        var reported = targets.Where(target => target.Delivered && target.OutputFile is not null).ToList();
         return copy => reported.Any(target =>
             target.RelativePath == copy.RelativePath && SameFile(target.OutputFile!, copy.OutputPath) &&
-            (target.OutputWrittenAt is not { } writtenAt || writtenAt == copy.WrittenAt));
+            (target.OutputWrittenAt is { } writtenAt ? writtenAt == copy.WrittenAt : copy.Outcome is null));
     }
+
+    private static List<HandoffTarget> DeliveredTargets(IEnumerable<HandoffTarget> targets) =>
+        [.. targets.Where(target => target.Delivered && target.OutputFile is not null)];
+
+    private static Task<List<(string RelativePath, long OwnerRowId)>> RidersAsync(UnitOfWork uow, long handoffRowId) =>
+        uow.QueryAsync(
+            "SELECT relative_path, owner_row_id FROM media_manager_handoff_riders WHERE handoff_row_id = $row",
+            reader => (SqliteValues.GetString(reader, 0), SqliteValues.GetInt64(reader, 1)),
+            ("$row", handoffRowId));
 
     private static bool SameFile(string reported, string copy)
     {
