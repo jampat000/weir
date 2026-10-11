@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// Release gate: refuse to publish a stable tag unless the golden path has passed on the exact commit the tag points at.
-// A release candidate (a tag with a pre-release part, such as v1.0.0-rc.4) is not held for it: Weir is independent of
-// Deluno, so a Weir fix ships at once and the real-data test keeps running on it (the owner, 7 Oct 2026).
-// The golden path (docs/release.md, "Golden path before tagging") is a run of the real product on a clean
-// machine, installed from that commit's own build. Whoever drives it records the result as a GitHub commit status
-// on the commit:
+// Release gate: refuse to publish any tag, a release candidate included, unless Weir's scenario suite has passed on
+// the exact commit the tag points at. There is no pass-through for a release candidate and no waiver: a release is
+// proven before its tag, never after it (the owner, 11 Oct 2026, #954; the pass-through added in #907 is gone).
+//
+// The proof (docs/release.md, "Proof before tagging") is a run of the real product on a clean machine, installed from
+// that commit's own build: scripts/scenarios/Invoke-WeirScenarios.ps1 on the golden VM. A passing run records its
+// result as a GitHub commit status on the commit, and a failing run records a failure:
 //
 //   gh api repos/<owner>/<repo>/statuses/<sha> -f state=success -f context=golden-path \
 //     -f description="..." -f target_url="<link to the evidence>"
@@ -23,13 +24,14 @@ import { pathToFileURL } from "node:url";
 export const GOLDEN_PATH_CONTEXT = "golden-path";
 
 export const NO_PASSING_RUN =
-  "This commit has no passing golden-path run. Run the golden path on this exact build (see docs/release.md), then re-run the release.";
+  "This commit has no passing golden-path run. Run Weir's scenario suite on this exact build (see docs/release.md), then re-run the release.";
 
-// Whether a tag must wait for the golden path: a stable release does, a release candidate does not.
-export function requiresGoldenPath(tag) {
+// The version a release tag names. Every `v*` tag is gated, so this refuses only what is not a release tag at all,
+// rather than letting it through unjudged.
+export function releaseVersion(tag) {
   const version = String(tag ?? "").replace(/^refs\/tags\//, "").replace(/^v/, "").split("+")[0];
   if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) throw new Error(`Not a release tag: ${tag}`);
-  return !version.includes("-");
+  return version;
 }
 
 // The newest status for a context. `statuses` are commit statuses as the API returns them (id, context, state,
@@ -69,33 +71,36 @@ function listStatuses(repository, sha) {
   return output.split("\n").filter((line) => line.trim()).map((line) => JSON.parse(line));
 }
 
-function main() {
-  const argv = process.argv.slice(2);
-  const option = (flag) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
-  const tag = option("--tag") || process.env.GITHUB_REF_NAME;
-  if (!requiresGoldenPath(tag)) {
-    console.log(`Release gate: ${tag} is a release candidate, so it ships without waiting for the golden path.`);
-    return;
-  }
-  const repository = process.env.GITHUB_REPOSITORY;
+// Judges one tag on one commit and says why. `statusesOf(repository, sha)` lists the commit's statuses; `log` and
+// `error` are where the verdict goes. Returns true when the release may go ahead. Every tag is judged, whatever its
+// pre-release part: a release candidate needs the same record a stable release does.
+export function runGate({ tag, repository, sha, statusesOf = listStatuses, log = console.log, error = console.error }) {
+  const version = releaseVersion(tag);
   if (!repository) throw new Error("GITHUB_REPOSITORY must be set.");
-  const sha = option("--sha") || process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD^{commit}"], { encoding: "utf8" }).trim();
-  if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error(`Not a full commit SHA: ${sha}`);
-  console.log(`Release gate: the golden path must already have passed on ${sha}.`);
+  if (!/^[0-9a-f]{40}$/.test(sha ?? "")) throw new Error(`Not a full commit SHA: ${sha}`);
+  log(`Release gate: Weir's scenario suite must already have passed on ${sha} before ${version} ships.`);
 
-  const statuses = listStatuses(repository, sha);
+  const statuses = statusesOf(repository, sha);
   const problems = evaluateStatuses(statuses);
   if (problems.length === 0) {
     const passed = latestStatus(statuses);
-    console.log(`PASS: "${GOLDEN_PATH_CONTEXT}" is success on ${sha}, recorded by ${passed.creator} at ${passed.created_at}.`);
-    if (passed.description) console.log(`  ${passed.description}`);
-    if (passed.target_url) console.log(`  Evidence: ${passed.target_url}`);
-    return;
+    log(`PASS: "${GOLDEN_PATH_CONTEXT}" is success on ${sha}, recorded by ${passed.creator} at ${passed.created_at}.`);
+    if (passed.description) log(`  ${passed.description}`);
+    if (passed.target_url) log(`  Evidence: ${passed.target_url}`);
+    return true;
   }
 
-  console.error(`::error::${NO_PASSING_RUN}`);
-  for (const problem of problems) console.error(`  - ${problem}`);
-  process.exit(1);
+  error(`::error::${NO_PASSING_RUN}`);
+  for (const problem of problems) error(`  - ${problem}`);
+  return false;
+}
+
+function main() {
+  const argv = process.argv.slice(2);
+  const option = (flag) => (argv.includes(flag) ? argv[argv.indexOf(flag) + 1] : undefined);
+  const sha = option("--sha") || process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD^{commit}"], { encoding: "utf8" }).trim();
+  const passed = runGate({ tag: option("--tag") || process.env.GITHUB_REF_NAME, repository: process.env.GITHUB_REPOSITORY, sha });
+  if (!passed) process.exit(1);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
