@@ -53,13 +53,14 @@ public static class HandbackRules
     /// <item>a copy nobody has spoken for takes any word;</item>
     /// <item>a copy only an unsigned message has spoken for takes any signed word, and an unsigned message changes nothing a
     /// manager has said, since anybody could have sent it;</item>
-    /// <item>an import that has settled the copy is final (an import not yet settled, because Weir could not remove the copy, may be
-    /// retried);</item>
-    /// <item>a "will not import" is replaced only by the same connection's next word (the same hand-off's, or a hand-off of a
-    /// connection Weir can prove is the same one), never by another connection's or another manager's.</item>
+    /// <item>an import is never replaced by a "will not import", and one that settled the copy is final (an import not yet
+    /// settled, because Weir could not remove the copy, may be retried by another import);</item>
+    /// <item>a "will not import" is replaced by any signed import, since only the manager that refused can ever lift it
+    /// otherwise and the copy would be kept for good, and by the same connection's next refusal (the same hand-off's, or one of
+    /// a connection Weir cannot tell apart from it), never by another connection's refusal.</item>
     /// </list>
     /// </summary>
-    public static bool Hears(string? copyOutcome, bool copySettled, ManagerSpeaker? copySpeaker, ManagerSpeaker speaker, bool sameHandoff)
+    public static bool Hears(string? copyOutcome, bool copySettled, ManagerSpeaker? copySpeaker, ManagerSpeaker speaker, string outcome, bool sameHandoff)
     {
         ArgumentNullException.ThrowIfNull(speaker);
         if (copyOutcome is null)
@@ -77,7 +78,9 @@ public static class HandbackRules
             return false;
         }
 
-        return copyOutcome == Imported ? !copySettled : sameHandoff || speaker.IsSameConnectionAs(copySpeaker);
+        return copyOutcome == Imported
+            ? outcome == Imported && !copySettled
+            : outcome == Imported || sameHandoff || speaker.IsSameConnectionAs(copySpeaker);
     }
 
     /// <summary>How long an unclaimed copy waits before the Cleanup job may remove it, unless a person changes it.</summary>
@@ -191,12 +194,10 @@ public static class HandbackRules
             : $"{manager} will not import this file: {reason.Trim().TrimEnd('.')}. Weir kept its copy in the hand-back folder.";
 
     /// <summary>Why a word left the copy as it stands: what the copy already says, never the note of the word that put it there.</summary>
-    public static string StandingNote(string copyOutcome, bool released) =>
-        copyOutcome == NotImported
-            ? "Weir kept its copy, because another media manager connection said it will not import this file."
-            : released
-                ? "Weir had already released its copy, so there was nothing for it to remove."
-                : "Weir had already settled its copy, so it left it as it is.";
+    public static string StandingNote(bool released) =>
+        released
+            ? "Weir had already released its copy, so there was nothing for it to remove."
+            : "Weir had already settled its copy, so it left it as it is.";
 
     public static string UnclaimedNote(long days) =>
         $"No media manager imported it within {days} {(days == 1 ? "day" : "days")}, so Weir removed its copy.";

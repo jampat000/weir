@@ -11,12 +11,13 @@ namespace Weir.Core.MediaManagers;
 public sealed record ManagerSpeaker(string SourceKey, long? ConnectionId, bool Authenticated)
 {
     /// <summary>
-    /// Both are the same connection of the same kind of manager, provably. When Weir could not tell which connection spoke, it
-    /// cannot say two words came from one.
+    /// This is the connection that <paramref name="other"/> spoke for, as far as Weir can tell: the same kind of manager, and
+    /// either the same connection or one <paramref name="other"/> was never attributed to (a global secret with several
+    /// connections, or a word recorded before connections were kept), which would otherwise lock the word in for good.
     /// </summary>
     public bool IsSameConnectionAs(ManagerSpeaker? other) =>
-        other is not null && ConnectionId is not null && ConnectionId == other.ConnectionId &&
-        string.Equals(SourceKey, other.SourceKey, StringComparison.Ordinal);
+        other is not null && string.Equals(SourceKey, other.SourceKey, StringComparison.Ordinal) &&
+        (other.ConnectionId is null || ConnectionId == other.ConnectionId);
 
     /// <summary>The same caller as far as Weir can tell, so a repeat of its message is not a new word.</summary>
     public bool IsSameCallerAs(ManagerSpeaker? other) =>

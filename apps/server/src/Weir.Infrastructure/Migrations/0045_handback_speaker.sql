@@ -16,13 +16,16 @@ UPDATE handbacks
 SET outcome_source_key = lower(outcome_by)
 WHERE outcome IS NOT NULL AND outcome_by IN ('Deluno', 'Sonarr', 'Radarr');
 
--- 2. The connection, from the hand-off that recorded the same word at the same moment. A word no hand-off can be matched to
---    keeps no connection, so it is never taken for another connection's.
+-- 2. The connection, from the hand-off that recorded the same word at the same moment: one that named the file itself, or a
+--    folder hand-off that covered it (the hand-off row holds the folder's path; its targets hold the files). A word no hand-off
+--    can be matched to keeps no connection, and Weir takes a word with none for the same kind of manager's.
 UPDATE handbacks
 SET outcome_connection_id = (
         SELECT h.connection_id FROM media_manager_handoffs h
         WHERE h.library_id = handbacks.library_id
-          AND h.relative_path = handbacks.relative_path
+          AND (h.relative_path = handbacks.relative_path
+               OR EXISTS (SELECT 1 FROM media_manager_handoff_targets t
+                          WHERE t.handoff_row_id = h.id AND t.relative_path = handbacks.relative_path))
           AND h.source_key = handbacks.outcome_source_key
           AND h.outcome = handbacks.outcome
           AND h.outcome_at = handbacks.outcome_at

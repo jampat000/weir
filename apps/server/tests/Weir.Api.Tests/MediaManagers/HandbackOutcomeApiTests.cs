@@ -616,24 +616,6 @@ public sealed partial class HandbackOutcomeApiTests : IDisposable
     }
 
     [Fact]
-    public async Task An_imported_after_a_not_imported_leaves_a_copy_another_manager_settled()
-    {
-        await using var server = await StartAsync();
-        var copy = await FinishedHandoffAsync(server);
-        using (var refused = await PostOutcomeAsync(server, "h1", DelunoOutcome("not-imported", null, "The import dead-lettered.")))
-        {
-            Assert.Equal(HttpStatusCode.OK, refused.StatusCode);
-        }
-
-        await TestDatabase.ExecuteAsync(server, "UPDATE handbacks SET outcome_by = 'Radarr', outcome_source_key = 'radarr'");
-
-        using var imported = await PostOutcomeAsync(server, "h1", DelunoOutcome("imported", "/media/movies/Film/film.mkv", null));
-
-        Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
-        Assert.True(File.Exists(copy));
-    }
-
-    [Fact]
     public async Task Another_managers_hand_off_with_the_same_id_is_never_found()
     {
         await using var server = await StartAsync();

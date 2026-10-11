@@ -56,14 +56,14 @@ public sealed class HandbackOutcomes
             return new ManagerImportResult(false, false, "Weir did not hand this file back, so there is nothing for it to record.");
         }
 
-        if (!HandbackRules.Hears(row.Outcome, row.SettledAt is not null, row.OutcomeSpeaker, speaker, sameHandoff: false))
+        if (!HandbackRules.Hears(row.Outcome, row.SettledAt is not null, row.OutcomeSpeaker, speaker, HandbackRules.Imported, sameHandoff: false))
         {
             return LeftAlone(row, manager, speaker);
         }
 
         var now = _time.GetUtcNow();
         await _handback.RecordOutcomeAsync(uow, row.Id, HandbackRules.Imported, manager, speaker, now, importEvent.FilePath, null).ConfigureAwait(false);
-        var afterAll = row.Outcome == HandbackRules.NotImported;
+        var afterAll = ChangesItsMind(row, speaker, HandbackRules.Imported);
         if (row.SettledAt is not null && row.Outcome is null)
         {
             // Weir already stopped looking after this copy (the Cleanup job removed it, say): the import is recorded, and
@@ -96,7 +96,7 @@ public sealed class HandbackOutcomes
         var released = copy.ReleasedAt is not null;
         return copy.Outcome == HandbackRules.Imported && speaker.IsSameCallerAs(copy.OutcomeSpeaker)
             ? new ManagerImportResult(true, released, copy.ReleaseNote ?? string.Empty, copy.RelativePath, copy.LibraryId)
-            : new ManagerImportResult(true, false, HandbackRules.StandingNote(copy.Outcome!, released), copy.RelativePath, copy.LibraryId);
+            : new ManagerImportResult(true, false, HandbackRules.StandingNote(released), copy.RelativePath, copy.LibraryId);
     }
 
     /// <summary>
@@ -107,9 +107,9 @@ public sealed class HandbackOutcomes
     /// every one. Several hand-offs of one file share its copy, so what the copy says is only ever what the latest word on it
     /// was. Whether a copy takes a word is <see cref="HandbackRules.Hears"/>'s to say, by who spoke (the kind of manager and its
     /// connection, not its display name) and by whether the report named this generation of the copy: an <c>imported</c>
-    /// releases a copy the same connection's <c>not-imported</c> kept, whichever of its hand-offs that refusal was for (and
-    /// Activity says it imported it after all), a <c>not-imported</c> never changes a copy that has been imported, and neither
-    /// changes a copy another connection or manager has spoken for. The reply is built from what this outcome did to the copies
+    /// releases a copy a <c>not-imported</c> kept, whoever refused (and Activity says it imported it after all when the same kind of
+    /// manager had refused), a <c>not-imported</c> never changes a copy that has been imported, and a refusal replaces only the same
+    /// connection's refusal. The reply is built from what this outcome did to the copies
     /// it names, never from another outcome's note.
     /// </summary>
     public async Task<HandoffOutcomeResult> RecordHandoffOutcomeAsync(
@@ -139,7 +139,7 @@ public sealed class HandbackOutcomes
                 named.Add(copy.RelativePath);
                 // This hand-off's own refusal is its to take back, as long as it is still the word on the copy.
                 var sameHandoff = supersedes && (copy.OutcomeSpeaker is null || copy.OutcomeSpeaker.IsSameCallerAs(speaker));
-                if (!HandbackRules.Hears(copy.Outcome, copy.SettledAt is not null, copy.OutcomeSpeaker, speaker, sameHandoff))
+                if (!HandbackRules.Hears(copy.Outcome, copy.SettledAt is not null, copy.OutcomeSpeaker, speaker, outcome, sameHandoff))
                 {
                     // Another word stands on this copy, and it is not this one's to change. The reply says what the copy says,
                     // never the note that word left on it.
@@ -150,13 +150,13 @@ public sealed class HandbackOutcomes
                     else
                     {
                         kept++;
-                        firstKeptNote ??= HandbackRules.StandingNote(copy.Outcome!, copy.ReleasedAt is not null);
+                        firstKeptNote ??= HandbackRules.StandingNote(copy.ReleasedAt is not null);
                     }
 
                     continue;
                 }
 
-                afterAll |= outcome == HandbackRules.Imported && copy.Outcome == HandbackRules.NotImported;
+                afterAll |= ChangesItsMind(copy, speaker, outcome);
                 await _handback.RecordOutcomeAsync(uow, copy.Id, outcome, manager, speaker, occurredAt, importedPath, reason).ConfigureAwait(false);
                 // Settled with nobody's word on it (Cleanup removed it): keep what happened then. A copy that has a word on it
                 // and was heard again is looked at afresh.
@@ -213,6 +213,11 @@ public sealed class HandbackOutcomes
             .ConfigureAwait(false);
         return new HandoffOutcomeResult(released, message);
     }
+
+    /// <summary>An import that lifts a refusal the same kind of manager made: it had said it would not import the file, and did after all.</summary>
+    private static bool ChangesItsMind(HandbackRow copy, ManagerSpeaker speaker, string outcome) =>
+        outcome == HandbackRules.Imported && copy.Outcome == HandbackRules.NotImported &&
+        (copy.OutcomeSpeaker is null || string.Equals(copy.OutcomeSpeaker.SourceKey, speaker.SourceKey, StringComparison.Ordinal));
 
     /// <summary>
     /// Whether the hand-off's report named a copy the manager has said nothing about yet: a retry that finished after the manager
