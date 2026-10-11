@@ -29,7 +29,7 @@ whose source is in [`../docs-site/docs`](../docs-site/docs).
 - [`release-governance.md`](release-governance.md) - repository controls and the checks before and after a release.
 - [`ci-standard.md`](ci-standard.md) - the CI and release standard Weir shares, as an identical separate copy, with Deluno.
 - [`tray-standard.md`](tray-standard.md) - what the tray icon shows, its menu and its behaviour, the same in Weir and Deluno (a word-for-word copy).
-- [`golden-path.md`](golden-path.md) - the run that gates stable releases (and every Deluno tag), the same in Weir and Deluno: install on a clean VM, use it like a person, record the pass.
+- [`golden-path.md`](golden-path.md) - the shared checklist for Deluno's golden path, the same in Weir and Deluno: install on a clean VM, use it like a person, record the pass. Weir's own gate is the scenario suite in `scripts/scenarios` (see `release.md`, "Proof before tagging").
 - [`release-notes/TEMPLATE.md`](release-notes/TEMPLATE.md) - the template for release notes.
 - [`smoke-checklists.md`](smoke-checklists.md) - manual Windows and Docker smoke checks.
 - [`security-hardening.md`](security-hardening.md) - security baseline and credential handling.

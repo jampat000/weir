@@ -196,3 +196,20 @@ test("the golden-path job is required and only reads statuses", () => {
   rejects(editJob(real.release, "golden-path", (body) => body.replace("verify-golden-path-for-release.mjs", "something-else.mjs")), /golden-path job/);
   rejects(editJob(real.release, "golden-path", (body) => body.replace("statuses: read", "statuses: write")), /statuses/);
 });
+
+test("the golden-path job cannot be skipped for a release candidate or anything else", () => {
+  const skipped = /golden-path job must run, and must fail the release, for every tag/;
+  // The pass-through #907 added, written as the workflow would: a job that does not run for a pre-release tag.
+  rejects(
+    editJob(real.release, "golden-path", (body) => body.replace("    runs-on:", "    if: ${{ !contains(github.ref_name, '-') }}\n    runs-on:")),
+    skipped,
+  );
+  rejects(
+    editJob(real.release, "golden-path", (body) => body.replace("      - name: The golden path passed on the tagged commit", "      - name: The golden path passed on the tagged commit\n        if: ${{ !contains(github.ref_name, '-rc.') }}")),
+    skipped,
+  );
+  rejects(
+    editJob(real.release, "golden-path", (body) => body.replace("    timeout-minutes: 10", "    timeout-minutes: 10\n    continue-on-error: true")),
+    skipped,
+  );
+});

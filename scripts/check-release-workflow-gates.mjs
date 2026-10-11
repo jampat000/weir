@@ -264,6 +264,13 @@ export function checkReleaseGates({ release, ci, ciContract, ciPackaging }) {
   }
   rejectText(goldenPath, "statuses: write", `${RELEASE} golden-path job (the gate reads the record; it never writes one)`);
   rejectText(goldenPath, "--wait", `${RELEASE} golden-path job (the golden path is run before the tag; the gate does not wait)`);
+  // Every tag is held for it, release candidates included (#954): nothing may skip the job or any step of it, and a
+  // failure of it may not be waved on.
+  for (const skip of [/\n {4}if:/, /\n {6,}(?:- )?if:/, /continue-on-error:/]) {
+    if (skip.test(`\n${goldenPath}`)) {
+      throw new Error(`${RELEASE} golden-path job must run, and must fail the release, for every tag: it may have no if: and no continue-on-error:, so no tag (a release candidate included) passes it unproven.`);
+    }
+  }
 
   const validate = requireJob(release, "validate", RELEASE);
   for (const marker of [
@@ -407,8 +414,8 @@ export function checkReleaseGates({ release, ci, ciContract, ciPackaging }) {
 export const SUCCESS_MESSAGE =
   "Only publish-windows (the GitHub Release) and publish-docker (the image) can publish, each needs the shared " +
   "checks plus its own build's and neither waits for the other, the moving tags move last and never for a " +
-  "release candidate, the Docker candidate's live E2E runs unpushed, the release needs a golden-path status on " +
-  "the tagged commit, and ci-passed judges every CI job and still carries the release's evidence.";
+  "release candidate, the Docker candidate's live E2E runs unpushed, every tag (a release candidate too) needs a " +
+  "passing golden-path status on the tagged commit with no way to skip it, and ci-passed judges every CI job and still carries the release's evidence.";
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
