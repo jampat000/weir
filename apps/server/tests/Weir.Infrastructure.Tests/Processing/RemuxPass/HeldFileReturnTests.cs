@@ -22,7 +22,7 @@ namespace Weir.Infrastructure.Tests.Processing.RemuxPass;
 /// grace. Each case runs for a single file in the watched folder and for a file in a release folder. Real database, folders,
 /// intake, handler, sweep and worker loop; only ffprobe/ffmpeg and the manager's HTTP are fakes.
 /// </summary>
-public sealed class HeldFileReturnTests : IDisposable
+public sealed partial class HeldFileReturnTests : IDisposable
 {
     private const string EventsPath = "/api/integrations/processors/events";
     private const string ReleaseName = "Busyfilm.2017.1080p.WEB-DL.x264-GOLDEN";
@@ -31,7 +31,14 @@ public sealed class HeldFileReturnTests : IDisposable
     private readonly PassFolders _folders = new();
     private readonly FakeMediaRunner _media = new();
     private long _libraryId;
+    private long _connectionId;
     private bool _releaseFolder;
+
+    // What the next pass does at the moments the handler lets a test in: while it waits to look again at a file that was not there,
+    // right after that look finds it still gone, and just before it tells the manager.
+    private Func<CancellationToken, Task>? _goneLookAgain;
+    private Func<Task>? _goneConfirmed;
+    private Func<Task>? _beforeReport;
 
     public HeldFileReturnTests()
     {
@@ -64,10 +71,10 @@ public sealed class HeldFileReturnTests : IDisposable
             ("$w", _folders.Watched),
             ("$o", _folders.Output),
             ("$k", _folders.Work))), CultureInfo.InvariantCulture);
-        var connection = await _fixture.AddConnectionAsync("deluno", "http://192.0.2.30:5099", "k1");
+        _connectionId = await _fixture.AddConnectionAsync("deluno", "http://192.0.2.30:5099", "k1");
         if (linkedToDeluno)
         {
-            await _fixture.Store.Execute($"INSERT INTO library_manager_links (library_id, connection_id) VALUES ({_libraryId}, {connection})");
+            await _fixture.Store.Execute($"INSERT INTO library_manager_links (library_id, connection_id) VALUES ({_libraryId}, {_connectionId})");
         }
 
         _folders.Source(Relative);
@@ -75,7 +82,7 @@ public sealed class HeldFileReturnTests : IDisposable
         _media.DefaultProbe = FakeMediaRunner.EnglishOnly;
     }
 
-    private ProcessingJobProcessor Worker(TimeSpan? goneSettle = null)
+    private ProcessingJobProcessor Worker()
     {
         var data = new SqliteRemuxPassData(_fixture.Store.Database, _fixture.Connections, NullLogger<SqliteRemuxPassData>.Instance);
         var runner = new RemuxPassRunner(
@@ -102,7 +109,10 @@ public sealed class HeldFileReturnTests : IDisposable
             _fixture.Reporter,
             _fixture.Jobs)
         {
-            GoneSettle = goneSettle ?? TimeSpan.Zero,
+            GoneSettle = TimeSpan.Zero,
+            GoneLookAgain = _goneLookAgain,
+            GoneConfirmed = _goneConfirmed,
+            BeforeReport = _beforeReport,
         };
         return new ProcessingJobProcessor(
             _fixture.Jobs,
@@ -166,10 +176,10 @@ public sealed class HeldFileReturnTests : IDisposable
         }
     }
 
-    private async Task HandOffAsync(string handoffId) =>
+    private async Task HandOffAsync(string handoffId, long? connection = null, string sourceKey = "deluno") =>
         await _fixture.Db(uow => _fixture.Intake.EnqueueRefineAsync(uow, new MediaManagerImportEvent
         {
-            SourceKey = "deluno",
+            SourceKey = sourceKey,
             EventKind = "handoff",
             MediaScope = "movie",
             FilePath = Moved,
@@ -177,7 +187,7 @@ public sealed class HeldFileReturnTests : IDisposable
             CallbackPath = EventsPath,
             ReleaseName = ReleaseName,
             LibraryId = "lib-1",
-        }));
+        }, connection));
 
     /// <summary>The pass runs while the file is not there, as Busyfilm's did: the file is held as gone and nothing is told to the manager.</summary>
     private async Task RunPassWhileGoneAsync()
@@ -221,11 +231,21 @@ public sealed class HeldFileReturnTests : IDisposable
         Assert.True(File.Exists(Path.Join(_folders.Watched, Relative)), "the original is never touched");
     }
 
+    /// <summary>What the manager heartbeat does each minute: sends the reports Weir owes a manager that were not sent inside the request that made them.</summary>
+    private async Task FlushOwedReportsAsync()
+    {
+        foreach (var manager in new[] { "deluno", "radarr" })
+        {
+            await _fixture.Db(uow => _fixture.Reporter.SendWaitingReportsAsync(uow, manager));
+        }
+    }
+
     private static bool IsSupersededReport(WireObject report) => report.Get("failureClass") is WireString { Value: "superseded" };
 
     /// <summary>The send the release was sent again for gets its own last answer: not a completion, no output, nothing held or rejected.</summary>
-    private void AssertSuperseded(string handoffId)
+    private async Task AssertSupersededAsync(string handoffId)
     {
+        await FlushOwedReportsAsync();
         var report = Assert.Single(ReportsFor(handoffId));
         Assert.Equal("failed", WireConvert.Str(report["status"]));
         Assert.Equal("superseded", WireConvert.Str(report["failureClass"]));
@@ -254,7 +274,7 @@ public sealed class HeldFileReturnTests : IDisposable
         await DrainAsync();
 
         await AssertCleanedAndToldAsync("second");
-        AssertSuperseded("first");
+        await AssertSupersededAsync("first");
         Assert.Equal("cancelled", (await HandoffStatusAsync("first")).State);
         var status = await HandoffStatusAsync("second");
         Assert.Equal("completed", status.State);
@@ -326,10 +346,13 @@ public sealed class HeldFileReturnTests : IDisposable
         await HandOffAsync("first");
         TakeAway();
 
-        var working = Worker(TimeSpan.FromSeconds(1.5)).ProcessOneAsync("test-worker");
-        await Task.Delay(300);
-        BringBack();
-        await working;
+        // The file comes back while the pass waits to look again.
+        _goneLookAgain = _ =>
+        {
+            BringBack();
+            return Task.CompletedTask;
+        };
+        await DrainAsync();
 
         await AssertCleanedAndToldAsync("first");
         Assert.Equal(0, await _fixture.Store.Scalar("SELECT count(*) FROM activity_events WHERE event_type = 'processing.file_left_watched_folder'"));
@@ -343,10 +366,12 @@ public sealed class HeldFileReturnTests : IDisposable
         await SetUpAsync(releaseFolder);
         await HandOffAsync("first");
         TakeAway();
-        var working = Worker(TimeSpan.FromSeconds(1.5)).ProcessOneAsync("test-worker");
-        await Task.Delay(300);
-        BringBack();
-        await working;
+        _goneLookAgain = _ =>
+        {
+            BringBack();
+            return Task.CompletedTask;
+        };
+        await DrainAsync();
 
         await HandOffAsync("second");
         await DrainAsync();
@@ -418,7 +443,7 @@ public sealed class HeldFileReturnTests : IDisposable
         await DrainAsync();
 
         await AssertCleanedAndToldAsync("second");
-        AssertSuperseded("first");
+        await AssertSupersededAsync("first");
         Assert.Equal("cancelled", (await HandoffStatusAsync("first")).State);
         Assert.Equal(1, await _fixture.Store.Scalar($"SELECT count(*) FROM jobs WHERE job_kind = '{RemuxPassOutcomes.JobKind}'"));
         var status = await HandoffStatusAsync("second");
@@ -453,7 +478,7 @@ public sealed class HeldFileReturnTests : IDisposable
 
         Assert.True(sentAgain);
         await AssertCleanedAndToldAsync("second");
-        AssertSuperseded("first");
+        await AssertSupersededAsync("first");
         Assert.Equal("completed", (await HandoffStatusAsync("second")).State);
     }
 
@@ -518,6 +543,6 @@ public sealed class HeldFileReturnTests : IDisposable
         await DrainAsync();
 
         await AssertHandedBackAndToldAsync("second");
-        AssertSuperseded("first");
+        await AssertSupersededAsync("first");
     }
 }

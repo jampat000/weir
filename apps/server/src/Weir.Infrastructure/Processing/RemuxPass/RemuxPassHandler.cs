@@ -72,6 +72,15 @@ public sealed partial class RemuxPassHandler : IJobHandler
     /// <summary>Test seam: how long a file that was not there is given to come back before Weir believes it is gone.</summary>
     internal TimeSpan GoneSettle { get; init; } = GoneSources.DefaultSettle;
 
+    /// <summary>Test seam: what happens while a pass waits for a file that was not there to come back, in place of waiting <see cref="GoneSettle"/>.</summary>
+    internal Func<CancellationToken, Task>? GoneLookAgain { get; init; }
+
+    /// <summary>Test seam: runs once the second look has found the file still gone, before the pass settles it.</summary>
+    internal Func<Task>? GoneConfirmed { get; init; }
+
+    /// <summary>Test seam: runs once the pass has decided its outcome, just before the manager is told.</summary>
+    internal Func<Task>? BeforeReport { get; init; }
+
     /// <summary>
     /// How many times a file that is only waiting out the minimum file age is looked at again before Weir stops
     /// looking (#632). Each look is a minute or so apart, so this is about half an hour of a file that never stops
@@ -237,6 +246,11 @@ public sealed partial class RemuxPassHandler : IJobHandler
         await RecordAsync(result, progress.ActivityId, newEntry: AddsGoneEntry(result, claim.GoneListed)).ConfigureAwait(false);
 
         await FinishRejectedInputCleanupAsync(result, claim.Library, libraryId, mediaScope, origin).ConfigureAwait(false);
+        if (BeforeReport is { } beforeReport)
+        {
+            await beforeReport().ConfigureAwait(false);
+        }
+
         await ReportBackAsync(payloadJson, result).ConfigureAwait(false);
         await DownloadedScanAsync(result, mediaScope, origin).ConfigureAwait(false);
     }

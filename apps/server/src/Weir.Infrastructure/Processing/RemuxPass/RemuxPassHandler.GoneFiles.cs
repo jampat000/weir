@@ -20,10 +20,18 @@ public sealed partial class RemuxPassHandler
             return result;
         }
 
-        await Task.Delay(GoneSettle, cancellationToken).ConfigureAwait(false);
-        return GoneSources.HasLeft(watchedFolder, request.RelativeMediaPath)
-            ? RemuxPassRunner.SourceGone(request.RelativeMediaPath, result.Get("inspected_source_path") is WireString inspected ? inspected.Value : null)
-            : await _runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
+        await (GoneLookAgain?.Invoke(cancellationToken) ?? Task.Delay(GoneSettle, cancellationToken)).ConfigureAwait(false);
+        if (!GoneSources.HasLeft(watchedFolder, request.RelativeMediaPath))
+        {
+            return await _runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (GoneConfirmed is { } confirmed)
+        {
+            await confirmed().ConfigureAwait(false);
+        }
+
+        return RemuxPassRunner.SourceGone(request.RelativeMediaPath, result.Get("inspected_source_path") is WireString inspected ? inspected.Value : null);
     }
 
     /// <summary>
