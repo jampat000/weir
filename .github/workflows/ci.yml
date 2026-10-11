@@ -212,7 +212,7 @@ jobs:
       - name: Release and CI gate rules
         run: |
           node scripts/check-release-workflow-gates.mjs
-          node --test scripts/check-release-workflow-gates.test.mjs scripts/verify-ci-for-release.test.mjs scripts/ci-passed.test.mjs scripts/retry-failed-tests.test.mjs
+          node --test scripts/check-release-workflow-gates.test.mjs scripts/verify-ci-for-release.test.mjs scripts/ci-passed.test.mjs scripts/retry-failed-tests.test.mjs scripts/verify-golden-path-for-release.test.mjs scripts/scenarios.test.mjs
           node --test scripts/semver.test.mjs scripts/check-release-version.test.mjs scripts/find-previous-release.test.mjs scripts/prune-release-feed.test.mjs scripts/check-release-assets-single-version.test.mjs
 
   server-linux:

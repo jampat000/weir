@@ -25,6 +25,7 @@ public sealed partial class MediaManagerIntake
         foreach (var (target, earlier) in repeats)
         {
             await CleanedSources.RecordSkipAsync(uow, library.Id, target, earlier, "webhook").ConfigureAwait(false);
+            await CleanedSources.SettleRowAsync(uow, library.Id, target, earlier, _time.GetUtcNow()).ConfigureAwait(false);
             if (string.IsNullOrEmpty(importEvent.HandoffId))
             {
                 continue;

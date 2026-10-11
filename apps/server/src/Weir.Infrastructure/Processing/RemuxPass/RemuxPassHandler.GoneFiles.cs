@@ -5,8 +5,7 @@ namespace Weir.Infrastructure.Processing.RemuxPass;
 
 public sealed partial class RemuxPassHandler
 {
-    /// <summary>The payload and result key counting how many times a pass has found its file gone.</summary>
-    private const string GoneLooksKey = "gone_looks";
+    private const string GoneLooksKey = GoneLooks.Key;
 
     /// <summary>
     /// A pass that failed because its file was not there is looked at again after a few seconds, the way a hand-off is told a share
@@ -21,10 +20,18 @@ public sealed partial class RemuxPassHandler
             return result;
         }
 
-        await Task.Delay(GoneSettle, cancellationToken).ConfigureAwait(false);
-        return GoneSources.HasLeft(watchedFolder, request.RelativeMediaPath)
-            ? RemuxPassRunner.SourceGone(request.RelativeMediaPath, result.Get("inspected_source_path") is WireString inspected ? inspected.Value : null)
-            : await _runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
+        await (GoneLookAgain?.Invoke(cancellationToken) ?? Task.Delay(GoneSettle, cancellationToken)).ConfigureAwait(false);
+        if (!GoneSources.HasLeft(watchedFolder, request.RelativeMediaPath))
+        {
+            return await _runner.RunAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (GoneConfirmed is { } confirmed)
+        {
+            await confirmed().ConfigureAwait(false);
+        }
+
+        return RemuxPassRunner.SourceGone(request.RelativeMediaPath, result.Get("inspected_source_path") is WireString inspected ? inspected.Value : null);
     }
 
     /// <summary>
@@ -48,7 +55,8 @@ public sealed partial class RemuxPassHandler
     /// (<see cref="GoneSources.LookAgainAfter"/>). That look finds the file back, and processes it, or still gone, and forgets it and
     /// tells the manager that handed it over. The first look is not final, so nothing is reported yet.
     /// </summary>
-    private async Task LookAgainForGoneFileAsync(long jobId, WireObject data, WireObject? origin, WireObject result, CancellationToken cancellationToken)
+    private async Task LookAgainForGoneFileAsync(
+        long jobId, WireObject data, WireObject? origin, WireObject result, (string WatchedFolder, string RelativePath, string MediaScope, long? LibraryId) file, CancellationToken cancellationToken)
     {
         if (_jobs is null || result.Get("outcome") is not WireString { Value: RemuxPassOutcomes.SourceGone } || result.Get(GoneLooksKey) is not WireInteger { Value: var looks } || looks != 0)
         {
@@ -62,5 +70,16 @@ public sealed partial class RemuxPassHandler
             _time.GetUtcNow() + GoneSources.LookAgainAfter,
             result,
             cancellationToken).ConfigureAwait(false);
+
+        // The file can come back, and a send for it arrive, in the time it took to get here; nothing would start the look until the sweep.
+        if (file.LibraryId is { } libraryId && GoneSources.IsBack(file.WatchedFolder, file.RelativePath))
+        {
+            await LockedWrites.RunAsync(
+                _database,
+                uow => GoneLooks.StartForFileAsync(uow, file.RelativePath, file.MediaScope, libraryId),
+                _logger,
+                "start the look at a file that is back",
+                cancellationToken).ConfigureAwait(false);
+        }
     }
 }

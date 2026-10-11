@@ -7,7 +7,7 @@
 - **.NET** for anything that drives a browser or judges a running server: the contract suite, the E2E tests and
   the packaged live audit are projects under `apps/server`, not scripts.
 - **No Python.** `check-no-python.mjs` fails CI if a `.py` file is tracked.
-- **PowerShell** only for Windows packaging and checks that exercise the Windows package.
+- **PowerShell** only for Windows packaging and checks that exercise the Windows package, which includes the VM scenario suite (`scenarios/`): it installs the package on a clean Windows machine and drives it, and runs in Windows PowerShell 5.1 because that is all the VM has.
 
 A new script follows these rules. A script in the wrong language is replaced when it next needs real
 work, not rewritten for its own sake. Scripts are named in kebab-case.
@@ -34,7 +34,7 @@ work, not rewritten for its own sake. Scripts are named in kebab-case.
 | `semver.mjs` | SemVer parsing and precedence for the release scripts (`semver.test.mjs`). |
 | `find-previous-release.mjs` | The delta base for the Windows package: the newest published release older than the one being released, by SemVer precedence (`find-previous-release.test.mjs`). |
 | `verify-ci-for-release.mjs` | Makes a release prove `ci.yml`'s `ci-passed` passed on the tagged commit, without waiting for a run still going (`verify-ci-for-release.test.mjs`). |
-| `verify-golden-path-for-release.mjs` | Makes a release prove the golden path passed on the tagged commit: the newest `golden-path` commit status on it must be `success` (`verify-golden-path-for-release.test.mjs`). |
+| `verify-golden-path-for-release.mjs` | Makes every release, release candidates included, prove Weir's scenario suite passed on the tagged commit: the newest `golden-path` commit status on it must be `success` (`verify-golden-path-for-release.test.mjs`). |
 | `prune-release-feed.mjs` | Removes the previous release's full nupkg (fetched only as the Windows package's delta base) and its feed entries from a `vpk pack` output directory, keeping just the version being released (`prune-release-feed.test.mjs`). |
 | `check-release-assets-single-version.mjs` | Release gate: fails if the Windows package output still names any version other than the one being released, as a backstop for `prune-release-feed.mjs` (`check-release-assets-single-version.test.mjs`). |
 | `check-dead-code.mjs` | Dead-code guard for the web app: unreferenced files, exports and types, found by Knip (allowlist in `dead-code-allowlist.json`) and unstyled class names. |
@@ -50,6 +50,7 @@ work, not rewritten for its own sake. Scripts are named in kebab-case.
 
 | Script | What it does |
 | --- | --- |
+| `scenarios/` | Weir's VM scenario suite, PowerShell because it drives the installed Windows build (#954): `Invoke-WeirScenarios.ps1` is the orchestrator for the golden VM (same shape as Deluno's `Invoke-GoldenPath.ps1`), `Run-WeirScenarios.ps1` runs inside the VM, `Weir.Scenarios.*.ps1` hold the catalog and the scenarios. `scenarios.test.mjs` checks that every file parses, every scenario has code and is in the docs, and `-WhatIf` touches nothing. |
 | `pre-push.mjs` | The pre-push checks `.githooks/pre-push` runs: no Python, the contract areas, prettier, the dead-code guard and API types drift. |
 | `build-brand-icons.mjs` | Renders every raster icon (favicon, apple touch icon, Windows tray and installer icon) from the SVGs in `packaging/brand`; `--check` compares them with the committed files without changing anything (`build-brand-icons.test.mjs`). Needs `npm ci` in `apps/web`. |
 | `stop-dev-api-port.mjs` | Stops the dev API that this worktree's `npm run dev` started, and nothing else. |

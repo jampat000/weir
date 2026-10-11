@@ -98,7 +98,13 @@ public sealed class HandoffTargetStore
             "UPDATE media_manager_handoff_targets SET result = $result, output_file = $output, message = $message, " +
             "output_written_at = CASE WHEN $output IS NULL THEN NULL " +
             "ELSE (SELECT written_at FROM handbacks WHERE library_id = $library AND relative_path = $path) END " +
-            "WHERE handoff_row_id = $row AND relative_path = $path",
+            "WHERE handoff_row_id = $row AND relative_path = $path " +
+            // The answer that ends a send (replaced, or not taken) only ever fills a file that has no result yet, and a file whose send was
+            // ended takes no later one: that send has had its last answer.
+            "AND (result IS NULL OR ($ending = 0 AND coalesce(message, '') NOT IN ($replacedMessage, $notTakenMessage)))",
+            ("$ending", CompletionReports.IsSuperseded(result) || CompletionReports.IsNotTaken(result) ? 1 : 0),
+            ("$replacedMessage", CompletionReports.SupersededMessage),
+            ("$notTakenMessage", CompletionReports.NotTakenMessage),
             ("$result", FolderHandoffReports.TargetResult(result)),
             ("$output", outputFile),
             ("$message", WireStrings.Slice(CompletionReports.MessageFor(result), 2000)),
@@ -160,7 +166,9 @@ public sealed class HandoffTargetStore
     /// <summary>
     /// Whether the manager was told about this copy: the hand-off reported the file, naming exactly this copy as Weir wrote
     /// it then. A copy Weir wrote for the same file after that report was never named to the manager, whatever its path.
-    /// A hand-off that records no files of its own named only the one file it was for.
+    /// A hand-off that records no generation of the copy it was told about (no files at all, or a report from before the
+    /// generation was kept) can only speak for a copy nobody has spoken for yet: it cannot be tied to the copy, so it must not
+    /// change what has been said about it.
     /// </summary>
     public async Task<Func<HandbackRow, bool>> ReportedCopiesAsync(UnitOfWork uow, HandoffLedgerRow row)
     {
@@ -169,7 +177,7 @@ public sealed class HandoffTargetStore
         var targets = await ListAsync(uow, row.Id).ConfigureAwait(false);
         if (targets.Count == 0)
         {
-            return copy => copy.RelativePath == row.RelativePath;
+            return copy => copy.RelativePath == row.RelativePath && copy.Outcome is null;
         }
 
         if (row.ReportedStatus is null)
@@ -180,7 +188,7 @@ public sealed class HandoffTargetStore
         var reported = targets.Where(target => target.Delivered && target.OutputFile is not null).ToList();
         return copy => reported.Any(target =>
             target.RelativePath == copy.RelativePath && SameFile(target.OutputFile!, copy.OutputPath) &&
-            (target.OutputWrittenAt is not { } writtenAt || writtenAt == copy.WrittenAt));
+            (target.OutputWrittenAt is { } writtenAt ? writtenAt == copy.WrittenAt : copy.Outcome is null));
     }
 
     private static bool SameFile(string reported, string copy)

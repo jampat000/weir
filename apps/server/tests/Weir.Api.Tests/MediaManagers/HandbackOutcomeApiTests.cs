@@ -9,7 +9,7 @@ namespace Weir.Api.Tests.MediaManagers;
 /// #652 over HTTP: Sonarr's and Radarr's import webhook, and the hand-off outcome Deluno sends, record what became of a
 /// file Weir handed back, and release Weir's copy only while it is exactly the file Weir wrote. Simulated media only.
 /// </summary>
-public sealed class HandbackOutcomeApiTests : IDisposable
+public sealed partial class HandbackOutcomeApiTests : IDisposable
 {
     private const string WebhookSecret = "s3cret";
 
@@ -224,14 +224,14 @@ public sealed class HandbackOutcomeApiTests : IDisposable
     /// <c>reported_status</c> are set as the real completion report would have left them, since this helper fakes the
     /// pass finishing rather than running one: an outcome route only releases a copy its report actually named.
     /// </summary>
-    private async Task<string> FinishedHandoffAsync(WeirTestServer server, string handoffId = "h1")
+    private async Task<string> FinishedHandoffAsync(WeirTestServer server, string handoffId = "h1", IReadOnlyDictionary<string, string>? headers = null)
     {
         var library = await MoviesAsync(server);
         var source = Path.Join(Watched, "Film", "film.mkv");
         Directory.CreateDirectory(Path.GetDirectoryName(source)!);
         await File.WriteAllTextAsync(source, "the original download");
         var handoff = new { eventType = "deluno.processor-handoff", handoffId, libraryId = "lib-1", mediaType = "movies", sourcePath = source, callbackPath = "/api/integrations/processors/events" };
-        using (var queued = await new ApiTestClient(server).PostAsync("/api/v1/intake/webhook/deluno", handoff, SecretHeader))
+        using (var queued = await new ApiTestClient(server).PostAsync("/api/v1/intake/webhook/deluno", handoff, headers ?? SecretHeader))
         {
             Assert.Equal(HttpStatusCode.OK, queued.StatusCode);
         }
@@ -613,24 +613,6 @@ public sealed class HandbackOutcomeApiTests : IDisposable
             await imported.Content.ReadAsStringAsync());
         Assert.True(File.Exists(copy));
         Assert.Equal(1, await TestDatabase.ScalarAsync(server, "SELECT count(*) FROM handbacks WHERE outcome = 'imported' AND released_at IS NULL AND settled_at IS NOT NULL"));
-    }
-
-    [Fact]
-    public async Task An_imported_after_a_not_imported_leaves_a_copy_another_manager_settled()
-    {
-        await using var server = await StartAsync();
-        var copy = await FinishedHandoffAsync(server);
-        using (var refused = await PostOutcomeAsync(server, "h1", DelunoOutcome("not-imported", null, "The import dead-lettered.")))
-        {
-            Assert.Equal(HttpStatusCode.OK, refused.StatusCode);
-        }
-
-        await TestDatabase.ExecuteAsync(server, "UPDATE handbacks SET outcome_by = 'Radarr'");
-
-        using var imported = await PostOutcomeAsync(server, "h1", DelunoOutcome("imported", "/media/movies/Film/film.mkv", null));
-
-        Assert.Equal(HttpStatusCode.OK, imported.StatusCode);
-        Assert.True(File.Exists(copy));
     }
 
     [Fact]

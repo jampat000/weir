@@ -17,7 +17,7 @@ services:
     # A release candidate is published under its version tag only, so this names one; `latest` arrives with 1.0.0.
     # Pin a version (ghcr.io/jampat000/weir:X.Y.Z, from the releases page) so `docker compose pull` can't move you
     # onto an untested release without you choosing to.
-    image: ${WEIR_DOCKER_IMAGE:-ghcr.io/jampat000/weir:1.0.0-rc.13}
+    image: ${WEIR_DOCKER_IMAGE:-ghcr.io/jampat000/weir:1.0.0-rc.14}
     pull_policy: always
     # Weir is named after this hostname ("Weir on my-server"), so set it to your server's name.
     # Without one, Docker names the container with twelve random characters.

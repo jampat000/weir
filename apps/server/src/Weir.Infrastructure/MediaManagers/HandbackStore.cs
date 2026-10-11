@@ -31,7 +31,8 @@ public sealed record HandbackRow(
     string? ReleaseNote,
     string WatchedFolder,
     string OutputFolder,
-    string MediaType);
+    string MediaType,
+    ManagerSpeaker? OutcomeSpeaker = null);
 
 /// <summary>What the release rule did with a copy.</summary>
 public enum HandbackReleaseKind
@@ -67,16 +68,20 @@ public sealed class HandbackStore
 {
     private const string Columns =
         "h.id, h.library_id, h.relative_path, h.output_path, h.output_size, h.output_mtime_ns, h.written_at, h.outcome, h.outcome_by, " +
-        "h.outcome_at, h.imported_path, h.outcome_reason, h.released_at, h.settled_at, h.release_note, l.watched_folder, l.output_folder, l.media_type";
+        "h.outcome_at, h.imported_path, h.outcome_reason, h.released_at, h.settled_at, h.release_note, l.watched_folder, l.output_folder, l.media_type, " +
+        "h.outcome_source_key, h.outcome_connection_id, h.outcome_authenticated";
 
     private const string From = "FROM handbacks h JOIN libraries l ON l.id = h.library_id";
 
     /// <summary>
     /// A pass wrote <paramref name="outputPath"/> for the file at <paramref name="relativePath"/>: remember exactly what it
-    /// wrote. A new copy of the same file starts its story over. A copy Weir cannot measure is not recorded, so it can
-    /// never be removed.
+    /// wrote, and the size and modification time of the source it was cleaned from (<paramref name="sourceSizeBytes"/> and
+    /// <paramref name="sourceModifiedTimeNs"/>, both or neither), which is how a later hand-off of the same source is
+    /// recognised even once the file has left the list. A new copy of the same file starts its story over. A copy Weir cannot
+    /// measure is not recorded, so it can never be removed.
     /// </summary>
-    public async Task RecordWrittenAsync(UnitOfWork uow, long libraryId, string relativePath, string outputPath, DateTimeOffset now)
+    public async Task RecordWrittenAsync(
+        UnitOfWork uow, long libraryId, string relativePath, string outputPath, DateTimeOffset now, long? sourceSizeBytes = null, long? sourceModifiedTimeNs = null)
     {
         ArgumentNullException.ThrowIfNull(uow);
         if (string.IsNullOrWhiteSpace(outputPath) || !TryMeasure(outputPath, out var size, out var mtimeNs))
@@ -85,17 +90,21 @@ public sealed class HandbackStore
         }
 
         await uow.ExecuteAsync(
-            "INSERT INTO handbacks (library_id, relative_path, output_path, output_size, output_mtime_ns, written_at) " +
-            "VALUES ($library, $path, $output, $size, $mtime, $now) " +
+            "INSERT INTO handbacks (library_id, relative_path, output_path, output_size, output_mtime_ns, written_at, source_size, source_mtime_ns) " +
+            "VALUES ($library, $path, $output, $size, $mtime, $now, $source_size, $source_mtime) " +
             "ON CONFLICT (library_id, relative_path) DO UPDATE SET output_path = excluded.output_path, output_size = excluded.output_size, " +
-            "output_mtime_ns = excluded.output_mtime_ns, written_at = excluded.written_at, outcome = NULL, outcome_by = NULL, outcome_at = NULL, " +
-            "imported_path = NULL, outcome_reason = NULL, released_at = NULL, settled_at = NULL, release_note = NULL, updated_at = CURRENT_TIMESTAMP",
+            "output_mtime_ns = excluded.output_mtime_ns, written_at = excluded.written_at, source_size = excluded.source_size, " +
+            "source_mtime_ns = excluded.source_mtime_ns, outcome = NULL, outcome_by = NULL, outcome_at = NULL, " +
+            "imported_path = NULL, outcome_reason = NULL, released_at = NULL, settled_at = NULL, release_note = NULL, " +
+            "outcome_source_key = NULL, outcome_connection_id = NULL, outcome_authenticated = 1, updated_at = CURRENT_TIMESTAMP",
             ("$library", libraryId),
             ("$path", relativePath),
             ("$output", outputPath),
             ("$size", size),
             ("$mtime", mtimeNs),
-            ("$now", TimestampColumns.Orm(now))).ConfigureAwait(false);
+            ("$now", TimestampColumns.Orm(now)),
+            ("$source_size", sourceSizeBytes),
+            ("$source_mtime", sourceSizeBytes is null ? null : sourceModifiedTimeNs)).ConfigureAwait(false);
     }
 
     /// <summary>A file's size and modification time (ns since the Unix epoch, as <c>SourceFiles.Fingerprint</c> measures it).</summary>
@@ -175,13 +184,19 @@ public sealed class HandbackStore
             ("$cutoff", TimestampColumns.Orm(writtenBefore)));
     }
 
-    /// <summary>What a manager said about the copy.</summary>
-    public Task RecordOutcomeAsync(UnitOfWork uow, long id, string outcome, string by, DateTimeOffset at, string? importedPath, string? reason)
+    /// <summary>What a manager said about the copy, and who said it (<paramref name="by"/> is the name Activity shows for it).</summary>
+    public Task RecordOutcomeAsync(
+        UnitOfWork uow, long id, string outcome, string by, ManagerSpeaker speaker, DateTimeOffset at, string? importedPath, string? reason)
     {
         ArgumentNullException.ThrowIfNull(uow);
+        ArgumentNullException.ThrowIfNull(speaker);
         return uow.ExecuteAsync(
-            "UPDATE handbacks SET outcome = $outcome, outcome_by = $by, outcome_at = $at, imported_path = $imported, outcome_reason = $reason, " +
+            "UPDATE handbacks SET outcome = $outcome, outcome_by = $by, outcome_source_key = $source, outcome_connection_id = $connection, " +
+            "outcome_authenticated = $authenticated, outcome_at = $at, imported_path = $imported, outcome_reason = $reason, " +
             "updated_at = CURRENT_TIMESTAMP WHERE id = $id",
+            ("$source", speaker.SourceKey),
+            ("$connection", speaker.ConnectionId),
+            ("$authenticated", speaker.Authenticated ? 1 : 0),
             ("$outcome", outcome),
             ("$by", by),
             ("$at", TimestampColumns.Orm(at)),
@@ -342,5 +357,8 @@ public sealed class HandbackStore
         SqliteValues.GetStringOrNull(reader, 14),
         SqliteValues.GetString(reader, 15),
         SqliteValues.GetString(reader, 16),
-        SqliteValues.GetString(reader, 17));
+        SqliteValues.GetString(reader, 17),
+        SqliteValues.GetStringOrNull(reader, 18) is { } sourceKey
+            ? new ManagerSpeaker(sourceKey, reader.IsDBNull(19) ? null : SqliteValues.GetInt64(reader, 19), SqliteValues.GetBool(reader, 20))
+            : null);
 }

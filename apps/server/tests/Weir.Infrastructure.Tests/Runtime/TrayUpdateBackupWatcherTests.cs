@@ -82,7 +82,7 @@ public sealed class TrayUpdateBackupWatcherTests : IDisposable
         Assert.Equal("saved", (string?)result["state"]);
         var path = (string)result["path"]!;
         Assert.StartsWith(PreUpdateBackup.FolderIn(_store.Options.BackupDir), path, StringComparison.Ordinal);
-        Assert.Matches(@"weir-0078-to-1\.0\.0-rc\.13-20260115T100000Z\.db$", path);
+        Assert.Matches($@"weir-{SchemaMigrator.HeadRevision[..4]}-to-1\.0\.0-rc\.13-20260115T100000Z\.db$", path);
         using (var copy = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = path, Mode = SqliteOpenMode.ReadOnly, Pooling = false }.ToString()))
         {
             copy.Open();

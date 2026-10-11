@@ -11,7 +11,7 @@ Short summary:
 - one server process per database: do not run multiple containers against the same SQLite file
 - same-origin API under `/api/v1`
 - stable tags are published by `.github/workflows/release.yml`
-- root `compose.yaml` pulls `ghcr.io/jampat000/weir:1.0.0-rc.13` (a release candidate is published under its version tag only; `latest` arrives with 1.0.0)
+- root `compose.yaml` pulls `ghcr.io/jampat000/weir:1.0.0-rc.14` (a release candidate is published under its version tag only; `latest` arrives with 1.0.0)
 - release smoke validation is defined in [`smoke-checklists.md`](smoke-checklists.md)
 
 Upgrade continuity requirements:
