@@ -127,9 +127,10 @@ public sealed partial class HeldFileReturnTests
         var body = (WireObject)sent.Json!;
         Assert.Equal(host, sent.Uri.Host);
         Assert.Equal("failed", WireConvert.Str(body["status"]));
-        Assert.Equal("held", WireConvert.Str(body["disposition"]));
         Assert.Equal("not_taken", WireConvert.Str(body["failureClass"]));
-        Assert.False(string.IsNullOrEmpty(WireConvert.Str(body["message"])));
+        Assert.False(body.ContainsKey("disposition"));
+        Assert.False(((WireBool)body["sourceRemoved"]).Value);
+        Assert.Contains("another connection", WireConvert.Str(body["message"]), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -200,5 +201,91 @@ public sealed partial class HeldFileReturnTests
         await DrainAsync();
 
         await AssertHandedBackAndToldAsync("first");
+    }
+
+    // --- who a report goes to ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task A_report_for_a_send_whose_connection_is_switched_off_stays_owed_and_is_not_given_to_a_sibling()
+    {
+        await SetUpAsync(releaseFolder: false, linkedToDeluno: false);
+        await _fixture.AddConnectionAsync("deluno", "http://192.0.2.31:5099", "k2");
+        await HandOffAsync("first", _connectionId);
+        await _fixture.Store.Execute($"UPDATE media_manager_connections SET enabled = 0 WHERE id = {_connectionId}");
+
+        await DrainAsync();
+
+        Assert.Empty(Reports());
+        Assert.Equal(1, await _fixture.Store.Scalar("SELECT count(*) FROM media_manager_handoffs WHERE handoff_id = 'first' AND pending_report_json IS NOT NULL"));
+
+        await _fixture.Store.Execute($"UPDATE media_manager_connections SET enabled = 1 WHERE id = {_connectionId}");
+        await FlushOwedReportsAsync();
+
+        var sent = Assert.Single(_fixture.Http.RequestsTo(HttpMethod.Post, EventsPath));
+        Assert.Equal("192.0.2.30", sent.Uri.Host);
+        Assert.Equal("completed", WireConvert.Str(((WireObject)sent.Json!)["status"]));
+    }
+
+    [Fact]
+    public async Task A_refusal_never_overwrites_the_result_a_file_already_has()
+    {
+        await SetUpAsync(releaseFolder: false);
+        await HandOffAsync("first");
+        var completed = new WireObject().Set("ok", true).Set("outcome", "live_output_written").Set("relative_media_path", Relative).Set("output_file", _folders.Out(Relative));
+
+        var targets = await _fixture.Db(async uow =>
+        {
+            var row = (await HandoffLedgerStore.FindAsync(uow, "deluno", "first"))!;
+            await _fixture.Targets.FinishAsync(uow, row, Relative, completed);
+            await _fixture.Targets.FinishAsync(uow, row, Relative, CompletionReports.NotTakenResult(Relative));
+            return await _fixture.Targets.ListAsync(uow, row.Id);
+        });
+
+        Assert.Equal("completed", Assert.Single(targets).Result);
+    }
+
+    [Fact]
+    public async Task A_file_cleaned_for_one_connection_answers_another_connections_send_as_a_completed_repeat()
+    {
+        await SetUpAsync(releaseFolder: false);
+        var other = await _fixture.AddConnectionAsync("deluno", "http://192.0.2.31:5099", "k2");
+        await HandOffAsync("first", _connectionId);
+        await DrainAsync();
+
+        await HandOffAsync("second", other);
+
+        var repeat = Assert.Single(_fixture.Http.RequestsTo(HttpMethod.Post, EventsPath), request => WireConvert.Str(((WireObject)request.Json!)["handoffId"]) == "second");
+        var body = (WireObject)repeat.Json!;
+        Assert.Equal("192.0.2.31", repeat.Uri.Host);
+        Assert.Equal("completed", WireConvert.Str(body["status"]));
+        Assert.Equal(WireConvert.Str(Assert.Single(ReportsFor("first"))["outputPath"]), WireConvert.Str(body["outputPath"]));
+        Assert.Single(_media.Remuxes);
+    }
+
+    // --- a folder send some of whose files were already done ------------------------------------------------------------------
+
+    [Fact]
+    public async Task A_folder_resent_after_one_of_its_files_was_done_announces_that_output_and_cleans_nothing_twice()
+    {
+        await SetUpAsync(releaseFolder: true);
+        var second = $"{ReleaseName}.B.mkv";
+        _folders.Source($"{ReleaseName}/{second}");
+        _media.Probes[second] = FakeMediaRunner.EnglishAndJapanese;
+        await HandOffAsync("first");
+        // The first video waits; the second is cleaned and reported to the first send.
+        await _fixture.Store.Execute(
+            $"UPDATE jobs SET not_before = '2099-01-01 00:00:00.000000' WHERE job_kind = '{RemuxPassOutcomes.JobKind}' AND json_extract(payload_json, '$.relative_media_path') = '{Relative}'");
+        await DrainAsync();
+        Assert.Single(_media.Remuxes);
+
+        await HandOffAsync("second");
+        await _fixture.Store.Execute($"UPDATE jobs SET not_before = NULL WHERE job_kind = '{RemuxPassOutcomes.JobKind}'");
+        await DrainAsync();
+
+        Assert.Equal(2, _media.Remuxes.Count());
+        var report = Assert.Single(ReportsFor("second"));
+        Assert.Equal("completed", WireConvert.Str(report["status"]));
+        Assert.Equal(2, ((WireArray)report["outputFiles"]).Items.Count);
+        await AssertSupersededAsync("first");
     }
 }
