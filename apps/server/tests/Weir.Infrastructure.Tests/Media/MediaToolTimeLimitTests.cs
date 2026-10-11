@@ -123,10 +123,13 @@ public sealed class MediaToolTimeLimitTests
     [Fact]
     public async Task An_ffmpeg_whose_progress_moves_on_is_left_to_run_for_longer_than_the_silence_limit()
     {
-        // Forty blocks 100 ms apart run for about four seconds, over the three-second limit, and each moves on.
-        var tools = Tools(new ProcessRunner(), silence: TimeSpan.FromSeconds(3));
+        using var child = new PacedChild();
+        var blocks = 0;
 
-        await tools.RunFfmpegAsync([StandInPath, "progress-advancing", "100", "40"], progressCallback: _ => { });
+        // Forty blocks 100 ms apart run for four seconds of the limit's clock, over the three-second limit, and each moves on.
+        var tools = Tools(child.Runner, silence: TimeSpan.FromSeconds(3));
+
+        await tools.RunFfmpegAsync([StandInPath, "progress-advancing", child.Pace, "40"], progressCallback: _ => child.Tick(TimeSpan.FromMilliseconds(100), ++blocks));
     }
 
     [Fact]

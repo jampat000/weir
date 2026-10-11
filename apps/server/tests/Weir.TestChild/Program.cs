@@ -69,7 +69,7 @@ switch (args.FirstOrDefault())
         {
             Console.Out.WriteLine(TickLine);
             Console.Out.Flush();
-            await Task.Delay(TimeSpan.FromMilliseconds(double.Parse(args[1], CultureInfo.InvariantCulture)));
+            await Pause(args[1], tick + 1);
         }
 
         if (args[0] == ChatterThenStall)
@@ -87,7 +87,7 @@ switch (args.FirstOrDefault())
         for (var block = 0; block < int.Parse(args[^1], CultureInfo.InvariantCulture); block++)
         {
             WriteProgressBlock(args[0] == ProgressAdvancing ? block + 1 : 1, final: false);
-            await Task.Delay(TimeSpan.FromMilliseconds(double.Parse(args[1], CultureInfo.InvariantCulture)));
+            await Pause(args[1], block + 1);
         }
 
         if (args[0] == ProgressAdvancing)
@@ -110,6 +110,26 @@ switch (args.FirstOrDefault())
 }
 
 return 0;
+
+// The wait between two lines or blocks: a number of milliseconds, or "ack:" and a folder, in which case the next one is printed
+// once the caller has made a file named for how many it has seen. A test that paces a child by the files it makes gives the child
+// no clock of its own to fall behind on a busy machine.
+static async Task Pause(string how, int seen)
+{
+    const string Ack = "ack:";
+    if (!how.StartsWith(Ack, StringComparison.Ordinal))
+    {
+        await Task.Delay(TimeSpan.FromMilliseconds(double.Parse(how, CultureInfo.InvariantCulture)));
+        return;
+    }
+
+    var file = Path.Join(how[Ack.Length..], seen.ToString(CultureInfo.InvariantCulture));
+    var waited = System.Diagnostics.Stopwatch.StartNew();
+    while (!File.Exists(file) && waited.Elapsed < TimeSpan.FromMinutes(1))
+    {
+        await Task.Delay(TimeSpan.FromMilliseconds(2));
+    }
+}
 
 static void WriteProgressBlock(int step, bool final)
 {
