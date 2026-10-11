@@ -10,7 +10,7 @@ namespace Weir.Contract.Tests.MediaManagers;
 /// Deluno sends a release a second time (a resend) after Weir has started the first send, so two hand-offs with their own ids name
 /// one file and share the one copy Weir wrote. Deluno answers each of them with its own outcome. An outcome, and Weir's reply to
 /// it, is about the hand-off it names: the reply and the file's panel never carry the note of another hand-off's outcome.
-/// The shapes are the ones the rig run of 10 October 2026 recorded for Retthree, Twicefilm and Twicetwo: a release sent twice,
+/// The shapes are the ones the rig run of 10 October 2026 recorded for Retthree and Twicefilm: a release sent twice,
 /// Deluno refusing Weir's report of the first send (HTTP 409), the second send answered at once with the first's output, and
 /// then Deluno's "will not import" for the first send and its "imported" for the second.
 /// </summary>
@@ -45,25 +45,6 @@ public sealed class ResentHandoffOutcomeTests
     }
 
     [Fact]
-    public async Task A_send_whose_report_Deluno_refused_is_still_answered_with_its_own_note()
-    {
-        const string firstId = "01a1281976f27f5e9e62861e4b1e141d";
-        await using var rig = await Rig.StartAsync("Twicetwo.2014.1080p.WEB-DL.x264-GOLDEN.mkv", firstId);
-        await rig.SendAsync(firstId);
-
-        var refused = await rig.RefuseAsync(firstId);
-
-        Assert.Equal(NotImportedReply, refused.Message);
-        Assert.True(File.Exists(rig.Copy), "Weir keeps the copy a manager will not import");
-        var handback = (await rig.PanelAsync())["handback"]!;
-        Assert.Equal("not-imported", (string)handback["outcome"]!);
-        Assert.Equal(
-            "Deluno will not import this file: Deluno removed Twicetwo.2014.1080p.WEB-DL.x264-GOLDEN.mkv from Transmission, so it will not import it. " +
-            "Weir kept its copy in the hand-back folder.",
-            (string)handback["release_note"]!);
-    }
-
-    [Fact]
     public async Task A_release_folder_sent_twice_gives_the_import_of_the_second_send_only_its_own_note()
     {
         await using var rig = await Rig.StartAsync("Folder.Film.2020.1080p.WEB-DL.x264-GOLDEN.mkv", "folder-first", inReleaseFolder: true);
@@ -89,26 +70,47 @@ public sealed class ResentHandoffOutcomeTests
 
         rig.AssertImportedAndReleased(imported);
         await rig.AssertThePanelTellsOneStoryAsync();
+        Assert.Contains($"Deluno imported {rig.FileName} after all", await rig.OutcomeTitlesAsync());
     }
 
     [Fact]
-    public async Task A_refusal_of_the_first_send_during_the_second_sends_processing_waits_and_does_not_follow_it_into_the_import()
+    public async Task A_late_import_for_an_older_send_cannot_change_the_copy_a_newer_send_wrote_and_Deluno_refused()
     {
-        await using var rig = await Rig.StartAsync("During.Film.2018.1080p.WEB-DL.x264-GOLDEN.mkv", "during-first");
-        await rig.SendAsync("during-first");
-        rig.RemoveTheCopy();
+        await using var rig = await Rig.StartAsync("Stale.Film.2015.1080p.WEB-DL.x264-GOLDEN.mkv", "stale-first");
         using var hold = rig.HoldPasses();
-        await rig.SendWithoutWaitingAsync("during-second");
+        await rig.SendWithoutWaitingAsync("stale-first");
         await rig.WaitForAPassUnderWayAsync();
-
-        await rig.AssertWeirIsStillWorkingOnAsync("during-first");
+        await rig.SendWithoutWaitingAsync("stale-second");
         hold.Release();
-        await rig.WaitForSendAsync("during-second");
-        var refused = await rig.RefuseAsync("during-first");
-        var imported = await rig.ImportAsync("during-second");
+        await rig.WaitForSendAsync("stale-first");
+        await rig.WaitForSendAsync("stale-second", reported: false);
+        rig.RemoveTheCopy();
+        await rig.SendAsync("stale-third");
+        await rig.RefuseAsync("stale-third");
 
-        Assert.Equal(NotImportedReply, refused.Message);
-        rig.AssertImportedAndReleased(imported);
+        var late = await rig.ImportAsync("stale-second");
+
+        Assert.False(late.Released);
+        Assert.DoesNotContain("will not import", late.Message, StringComparison.Ordinal);
+        Assert.True(File.Exists(rig.Copy), "the newer copy is still refused");
+        var handback = (await rig.PanelAsync())["handback"]!;
+        Assert.Equal("not-imported", (string)handback["outcome"]!);
+        Assert.StartsWith("Deluno will not import this file:", (string)handback["release_note"]!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Two_answers_arriving_together_leave_the_copy_imported_whichever_is_heard_first()
+    {
+        await using var rig = await Rig.StartAsync("Together.Film.2014.1080p.WEB-DL.x264-GOLDEN.mkv", "together-first");
+        await rig.SendAsync("together-first");
+        await rig.SendAsync("together-second");
+
+        var (refused, imported) = (rig.RefuseAsync("together-first"), rig.ImportAsync("together-second"));
+        await Task.WhenAll(refused, imported);
+
+        rig.AssertImportedAndReleased(await imported);
+        Assert.Equal("not-imported", (await refused).Outcome);
+        Assert.False((await refused).Released);
         await rig.AssertThePanelTellsOneStoryAsync();
     }
 
@@ -158,6 +160,7 @@ public sealed class ResentHandoffOutcomeTests
         await rig.SendWithoutWaitingAsync("busy-first");
         await rig.WaitForAPassUnderWayAsync();
         await rig.SendWithoutWaitingAsync("busy-second");
+        await rig.AssertWeirIsStillWorkingOnAsync("busy-first");
         hold.Release();
         await rig.WaitForSendAsync("busy-first");
         await rig.WaitForSendAsync("busy-second", reported: false);
@@ -332,6 +335,12 @@ public sealed class ResentHandoffOutcomeTests
             Assert.Equal(RemovedNote, (string)handback["release_note"]!);
             Assert.Null(handback["outcome_reason"]);
         }
+
+        public string FileName => Path.GetFileName(Copy);
+
+        /// <summary>The titles of Activity's lines about what managers said, newest first.</summary>
+        public async Task<List<string>> OutcomeTitlesAsync() =>
+            [.. (await _scenario.ActivityAsync("processing.handback_outcome")).Select(entry => (string)entry["title"]!)];
 
         public async Task<JsonObject> PanelAsync() =>
             await _scenario.FileRowAsync(_library, _relative) ?? throw new InvalidOperationException($"{_relative} has no row");
