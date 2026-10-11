@@ -125,7 +125,7 @@ public sealed partial class HandoffCompletionReporter
         var handBackFolder = localFolder is null ? null : AsManagerSees(Path.Join(localFolder, row.RelativePath));
         var folderBody = FolderHandoffReports.BuildBody(origin, targets, handBackFolder, outputFiles);
         var delivered = targets.Where(file => file.Delivered).Select(file => file.RelativePath).ToList();
-        var folderOutcome = new ReportedOutcome(state, folderBody, row.RelativePath, delivered, libraryId ?? row.LibraryId);
+        var folderOutcome = new ReportedOutcome(IsSupersededReport(folderBody) ? HandoffLedgerRules.Cancelled : state, folderBody, row.RelativePath, delivered, libraryId ?? row.LibraryId);
         return new StagedReport(folderOutcome, target, target is null ? reason : null);
     }
 
@@ -142,9 +142,18 @@ public sealed partial class HandoffCompletionReporter
             : null;
     }
 
+    /// <summary>A report to a send the manager replaced by sending the same release again, which ends that send as cancelled.</summary>
+    private static bool IsSupersededReport(WireObject body) =>
+        body.Get("failureClass") is WireString { Value: CompletionReports.SupersededFailureClass };
+
     /// <summary>The ledger state a one-file report means.</summary>
     private static string FileReportState(WireObject body)
     {
+        if (IsSupersededReport(body))
+        {
+            return HandoffLedgerRules.Cancelled;
+        }
+
         if (body.Get("status") is not WireString { Value: "completed" })
         {
             return HandoffLedgerRules.Failed;

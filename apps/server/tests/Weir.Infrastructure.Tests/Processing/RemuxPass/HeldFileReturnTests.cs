@@ -255,6 +255,7 @@ public sealed class HeldFileReturnTests : IDisposable
 
         await AssertCleanedAndToldAsync("second");
         AssertSuperseded("first");
+        Assert.Equal("cancelled", (await HandoffStatusAsync("first")).State);
         var status = await HandoffStatusAsync("second");
         Assert.Equal("completed", status.State);
         Assert.Equal(WireConvert.Str(Assert.Single(ReportsFor("second"))["outputPath"]), status.OutputPath);
@@ -418,6 +419,7 @@ public sealed class HeldFileReturnTests : IDisposable
 
         await AssertCleanedAndToldAsync("second");
         AssertSuperseded("first");
+        Assert.Equal("cancelled", (await HandoffStatusAsync("first")).State);
         Assert.Equal(1, await _fixture.Store.Scalar($"SELECT count(*) FROM jobs WHERE job_kind = '{RemuxPassOutcomes.JobKind}'"));
         var status = await HandoffStatusAsync("second");
         Assert.Equal("completed", status.State);

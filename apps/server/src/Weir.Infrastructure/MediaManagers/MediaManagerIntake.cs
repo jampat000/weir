@@ -337,6 +337,7 @@ public sealed partial class MediaManagerIntake
             : new Dictionary<string, FileSkipMarker>(StringComparer.Ordinal);
         var kept = new List<string>();
         var repeats = new List<(string Target, CleanedEarlier Earlier)>();
+        var superseded = new List<(string PayloadJson, string Target)>();
         foreach (var target in targets)
         {
             if (library is not null && IsKept(keptMarkers, library, target))
@@ -365,7 +366,9 @@ public sealed partial class MediaManagerIntake
             // Folder detection may already have queued (or started) this very file under its own random key. One file
             // gets one pass: the hand-off takes over that pass rather than adding a second one. A resend of this same
             // hand-off still lands on its own row through EnqueueOrGet below.
-            var active = library is null ? null : ActiveRemuxPasses.ForRelativePath(connection, transaction, target, library.MediaType, library.Id);
+            var active = library is null
+                ? null
+                : ActiveRemuxPasses.ForRelativePath(connection, transaction, target, library.MediaType, library.Id) ?? GoneLooks.WaitingPassThrough(connection, transaction, library.Id, target);
             if (library is not null && active is not null && GoneSources.IsBack(library.WatchedFolder, target) && GoneLooks.StartIfWaiting(connection, transaction, active))
             {
                 // A file that was gone and is here again: the pass waiting out the grace has nothing left to wait for.
@@ -376,7 +379,7 @@ public sealed partial class MediaManagerIntake
                 active is not null &&
                 ProcessingJobStore.GetByDedupeKey(connection, transaction, dedupeKey) is null)
             {
-                if (AdoptActivePass(connection, transaction, active, importEvent, dedupeKey, payload))
+                if (AdoptActivePass(connection, transaction, active, importEvent, dedupeKey, payload, target, superseded))
                 {
                     covered.Add(target);
                 }
@@ -403,6 +406,12 @@ public sealed partial class MediaManagerIntake
                 var keptPayload = IntakeRules.Payload(importEvent, library, relativePath, target);
                 var keptResult = new WireObject().Set("ok", false).Set("outcome", "failed").Set("relative_media_path", target).Set("reason", KeptReason);
                 await _reporter.ReportHandoffCompletionAsync(uow, IntakeRules.PayloadJson(keptPayload), keptResult).ConfigureAwait(false);
+            }
+
+            // The sends this one replaced are closed now, so the manager is told the answer is coming from this one.
+            foreach (var (replacedPayload, target) in superseded)
+            {
+                await _reporter.ReportHandoffCompletionAsync(uow, replacedPayload, CompletionReports.SupersededResult(target)).ConfigureAwait(false);
             }
         }
         else
@@ -434,11 +443,14 @@ public sealed partial class MediaManagerIntake
     /// key, so <c>GET /api/v1/intake/handoffs/{kind}/{id}</c> finds it (queue position, working), and it takes the
     /// hand-off's origin, so the outcome is called back to the manager. A pass that is already running picks the origin
     /// up when it finishes (<see cref="Processing.RemuxPass.RemuxPassHandler"/>). A pass that already belongs to
-    /// another hand-off is left with it: this hand-off is still recorded and answers from the file's own state, and the
-    /// file is not one this hand-off waits for before it reports. True when the hand-off took the pass over.
+    /// another send of the same manager (the release sent again) is taken over by this one: the replaced send is added to
+    /// <paramref name="superseded"/> to be told so, and this hand-off is the one the pass reports to. A pass that belongs to a
+    /// hand-off of a different manager is left with it: this hand-off is still recorded and answers from the file's own state,
+    /// and the file is not one this hand-off waits for before it reports. True when the hand-off took the pass over.
     /// </summary>
     private bool AdoptActivePass(
-        SqliteConnection connection, SqliteTransaction transaction, ProcessingJob active, MediaManagerImportEvent importEvent, string dedupeKey, WireObject handoffPayload)
+        SqliteConnection connection, SqliteTransaction transaction, ProcessingJob active, MediaManagerImportEvent importEvent, string dedupeKey, WireObject handoffPayload,
+        string target, List<(string PayloadJson, string Target)> superseded)
     {
         WireObject existing;
         try
@@ -453,7 +465,12 @@ public sealed partial class MediaManagerIntake
         if (HandoffOrigin.FromPayload(existing) is { HandoffId: { } ownerId } owner &&
             (owner.SourceKey != importEvent.SourceKey || ownerId != importEvent.HandoffId))
         {
-            return false;
+            if (owner.SourceKey != importEvent.SourceKey || string.IsNullOrEmpty(importEvent.HandoffId))
+            {
+                return false;
+            }
+
+            superseded.Add((IntakeRules.PayloadJson(existing), target));
         }
 
         if (handoffPayload.Get("origin") is WireObject origin)
@@ -462,7 +479,7 @@ public sealed partial class MediaManagerIntake
         }
 
         existing.Set("trigger", "webhook");
-        var newKey = string.IsNullOrEmpty(importEvent.HandoffId) ? active.DedupeKey : dedupeKey;
+        var newKey = string.IsNullOrEmpty(importEvent.HandoffId) || active.JobKind != IntakeRules.RemuxPassJobKind ? active.DedupeKey : dedupeKey;
         ProcessingJobStore.Execute(
             connection,
             transaction,

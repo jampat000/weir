@@ -122,6 +122,12 @@ public static class FolderHandoffReports
 
             body.Set("message", SuccessMessage(targets, skipped));
         }
+        else if (failed.Count == targets.Count && failed.All(target => target.Message == CompletionReports.SupersededMessage))
+        {
+            body.Set("message", CompletionReports.SupersededMessage)
+                .Set("sourceRemoved", false)
+                .Set("failureClass", CompletionReports.SupersededFailureClass);
+        }
         else
         {
             body.Set("message", FailureMessage(targets, failed, skipped, notExtras))

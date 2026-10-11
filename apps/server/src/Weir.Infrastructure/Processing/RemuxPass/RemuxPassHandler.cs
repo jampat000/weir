@@ -206,8 +206,9 @@ public sealed partial class RemuxPassHandler : IJobHandler
         }
 
         // A hand-off that arrived while this pass was running took the pass over (MediaManagerIntake.AdoptActivePass)
-        // and wrote its origin onto this job's row; pick it up now so the outcome is recorded and called back for it.
-        if (origin is null && await AdoptedOriginAsync(context.Id, cancellationToken).ConfigureAwait(false) is { } adopted)
+        // and wrote its origin onto this job's row, in place of the one the pass started with when the release was sent again;
+        // pick it up now so the outcome is recorded and called back for the hand-off that owns the pass.
+        if (await AdoptedOriginAsync(context.Id, cancellationToken).ConfigureAwait(false) is { } adopted && !IsSameHandoff(origin, adopted))
         {
             origin = adopted;
             payloadJson = WireJsonWriter.Dumps(data.Copy().Set("origin", adopted), WireJsonFormat.Compact);

@@ -168,6 +168,10 @@ public sealed partial class HandoffCompletionReporter
         {
             title = $"Told {name} that {fileName} is no longer there";
         }
+        else if (IsSupersededReport(body))
+        {
+            title = $"Told {name} that its newer send of {fileName} has the answer";
+        }
         else
         {
             title = $"Told {name} that Weir could not process {fileName}";
