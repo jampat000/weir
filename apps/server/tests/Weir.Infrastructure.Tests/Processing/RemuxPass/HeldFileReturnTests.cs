@@ -106,13 +106,19 @@ public sealed class HeldFileReturnTests : IDisposable
         };
         return new ProcessingJobProcessor(
             _fixture.Jobs,
-            new JobHandlerRegistry([handler]),
+            new JobHandlerRegistry([handler, PassThroughHandler()]),
             new SqliteActivityWriter(_fixture.Store.Database),
             new NoUnhandledJobFailureRecorder(),
             new NoJobNotifications(),
             _fixture.Store.Clock,
             NullLogger<ProcessingJobProcessor>.Instance);
     }
+
+    private ProcessingPassThroughHandler PassThroughHandler() =>
+        new(_fixture.Store.Database, _fixture.Store.Clock, NullLogger<ProcessingPassThroughHandler>.Instance, _fixture.Handback, _fixture.Libraries, _fixture.Jobs, _fixture.Reporter)
+        {
+            GoneSettle = TimeSpan.Zero,
+        };
 
     private async Task DrainAsync()
     {
@@ -211,8 +217,22 @@ public sealed class HeldFileReturnTests : IDisposable
         Assert.Equal("processed", await StatusAsync());
         var report = Assert.Single(ReportsFor(handoffId), candidate => WireConvert.Str(candidate["status"]) == "completed");
         Assert.False(string.IsNullOrEmpty(WireConvert.Str(report["outputPath"])));
-        Assert.DoesNotContain(Reports(), candidate => WireConvert.Str(candidate["status"]) == "failed");
+        Assert.DoesNotContain(Reports(), candidate => WireConvert.Str(candidate["status"]) == "failed" && !IsSupersededReport(candidate));
         Assert.True(File.Exists(Path.Join(_folders.Watched, Relative)), "the original is never touched");
+    }
+
+    private static bool IsSupersededReport(WireObject report) => report.Get("failureClass") is WireString { Value: "superseded" };
+
+    /// <summary>The send the release was sent again for gets its own last answer: not a completion, no output, nothing held or rejected.</summary>
+    private void AssertSuperseded(string handoffId)
+    {
+        var report = Assert.Single(ReportsFor(handoffId));
+        Assert.Equal("failed", WireConvert.Str(report["status"]));
+        Assert.Equal("superseded", WireConvert.Str(report["failureClass"]));
+        Assert.False(((WireBool)report["sourceRemoved"]).Value);
+        Assert.False(report.ContainsKey("disposition"));
+        Assert.False(report.ContainsKey("outputPath"));
+        Assert.False(string.IsNullOrEmpty(WireConvert.Str(report["message"])));
     }
 
     // --- the file is back during the grace ----------------------------------------------------------------------------
@@ -233,8 +253,11 @@ public sealed class HeldFileReturnTests : IDisposable
         await HandOffAsync("second");
         await DrainAsync();
 
-        await AssertCleanedAndToldAsync("first");
-        Assert.Equal("completed", (await HandoffStatusAsync("second")).State);
+        await AssertCleanedAndToldAsync("second");
+        AssertSuperseded("first");
+        var status = await HandoffStatusAsync("second");
+        Assert.Equal("completed", status.State);
+        Assert.Equal(WireConvert.Str(Assert.Single(ReportsFor("second"))["outputPath"]), status.OutputPath);
     }
 
     [Theory]
@@ -379,5 +402,120 @@ public sealed class HeldFileReturnTests : IDisposable
         Assert.Empty(_media.Remuxes);
         Assert.Equal(string.Empty, await StatusAsync());
         Assert.True(File.Exists(Path.Join(_folders.Watched, Relative)));
+    }
+
+    // --- the release is sent again while the first send's pass is waiting or running -------------------------------------
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_release_sent_again_while_the_first_send_is_queued_is_answered_by_the_new_send_alone(bool releaseFolder)
+    {
+        await SetUpAsync(releaseFolder);
+        await HandOffAsync("first");
+        await HandOffAsync("second");
+        await DrainAsync();
+
+        await AssertCleanedAndToldAsync("second");
+        AssertSuperseded("first");
+        Assert.Equal(1, await _fixture.Store.Scalar($"SELECT count(*) FROM jobs WHERE job_kind = '{RemuxPassOutcomes.JobKind}'"));
+        var status = await HandoffStatusAsync("second");
+        Assert.Equal("completed", status.State);
+        Assert.Equal(WireConvert.Str(Assert.Single(ReportsFor("second"))["outputPath"]), status.OutputPath);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_release_sent_again_while_the_first_send_is_being_cleaned_is_answered_by_the_new_send_alone(bool releaseFolder)
+    {
+        await SetUpAsync(releaseFolder);
+        await HandOffAsync("first");
+        var sentAgain = false;
+        _media.OnCall = () =>
+        {
+            string[] last;
+            lock (_media.Calls)
+            {
+                last = [.. _media.Calls[^1]];
+            }
+
+            if (!sentAgain && last[0] == "ffmpeg" && last.Contains("-map") && !last.Contains("null"))
+            {
+                sentAgain = true;
+                Task.Run(() => HandOffAsync("second")).GetAwaiter().GetResult();
+            }
+        };
+
+        await DrainAsync();
+
+        Assert.True(sentAgain);
+        await AssertCleanedAndToldAsync("second");
+        AssertSuperseded("first");
+        Assert.Equal("completed", (await HandoffStatusAsync("second")).State);
+    }
+
+    // --- a pass-through look waiting for a file that is gone ---------------------------------------------------------------
+
+    /// <summary>The original is to be handed back for the first send, but is not there: held as gone, with the look booked for after the grace.</summary>
+    private async Task BookPassThroughLookAsync()
+    {
+        await _fixture.Db(async uow =>
+        {
+            var row = await _fixture.Ledger.RecordReceivedAsync(uow, "deluno", "first", _libraryId, Relative);
+            await _fixture.Targets.AddAsync(uow, row, [Relative]);
+            return 0;
+        });
+        await _fixture.Store.Execute($"INSERT INTO files (library_id, relative_path, status, status_reason) VALUES ({_libraryId}, '{Relative}', 'processing_failed', 'failed')");
+        var payload = new WireObject()
+            .Set("relative_media_path", Relative)
+            .Set("library_id", _libraryId)
+            .Set("trigger", "worker")
+            .Set("origin", new WireObject().Set("source_key", "deluno").Set("handoff_id", "first").Set("callback_path", EventsPath));
+        await _fixture.Jobs.EnqueueOrGetAsync("pass-through-first", IntakeRules.PassThroughJobKind, WireJsonWriter.Dumps(payload, WireJsonFormat.Compact));
+        await RunPassWhileGoneAsync();
+        Assert.Equal(1, await _fixture.Store.Scalar($"SELECT count(*) FROM jobs WHERE job_kind = '{IntakeRules.PassThroughJobKind}' AND status = 'pending' AND not_before IS NOT NULL"));
+    }
+
+    private async Task AssertHandedBackAndToldAsync(string handoffId)
+    {
+        Assert.Empty(_media.Remuxes);
+        Assert.Equal("passed_through", await StatusAsync());
+        var report = Assert.Single(ReportsFor(handoffId), candidate => WireConvert.Str(candidate["status"]) == "completed");
+        Assert.True(File.Exists(WireConvert.Str(report["outputPath"])));
+        Assert.True(File.Exists(Path.Join(_folders.Watched, Relative)), "the original is never touched");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_pass_through_look_at_a_file_that_comes_back_on_its_own_starts_when_the_sweep_sees_it(bool releaseFolder)
+    {
+        await SetUpAsync(releaseFolder);
+        await BookPassThroughLookAsync();
+
+        Advance(TimeSpan.FromMinutes(2));
+        BringBack();
+        await SweepAsync();
+        await DrainAsync();
+
+        await AssertHandedBackAndToldAsync("first");
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task A_pass_through_look_at_a_file_that_is_back_when_the_release_is_sent_again_is_answered_to_the_new_send(bool releaseFolder)
+    {
+        await SetUpAsync(releaseFolder);
+        await BookPassThroughLookAsync();
+
+        Advance(TimeSpan.FromSeconds(30));
+        BringBack();
+        await HandOffAsync("second");
+        await DrainAsync();
+
+        await AssertHandedBackAndToldAsync("second");
+        AssertSuperseded("first");
     }
 }
