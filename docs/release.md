@@ -45,9 +45,9 @@ never changes. Cutting a release is:
    This PR touches nothing under `apps/`, `packaging/` or `Dockerfile`, so `CI / ci-passed` on it and
    on its merge to `main` both finish in well under a minute (path-aware CI skips everything but the
    repository checks).
-3. For a stable release, run the golden path on that exact commit and record that it passed
-   ([Golden path before tagging](#golden-path-before-tagging)). The release refuses to publish without it. A release
-   candidate skips this step.
+3. For every tag, release candidates included, run Weir's scenario suite on that exact commit and record that it passed
+   ([Proof before tagging](#proof-before-tagging)). The release refuses to publish without it. There is no
+   pass-through for a release candidate and no waiver (the owner, 11 Oct 2026, #954).
 4. Create an annotated tag on that merge commit:
 
    ```bash
@@ -60,21 +60,71 @@ never changes. Cutting a release is:
 
 5. Pushing `v*` triggers `.github/workflows/release.yml`. Its `ci-passed` job confirms `CI` already
    passed on that exact commit (`scripts/verify-ci-for-release.mjs`) instead of re-running it, its
-   `golden-path` job confirms the golden path passed on it too (`scripts/verify-golden-path-for-release.mjs`), and
+   `golden-path` job confirms the scenario suite passed on it too, for a release candidate as for a stable release
+   (`scripts/verify-golden-path-for-release.mjs`), and
    `windows-smoke` validates the tag itself is a well-formed `X.Y.Z` or `X.Y.Z-rc.N` version
    (`scripts/check-release-version.mjs`) before stamping it onto the server, the tray, the Windows
    package and the Docker image.
 6. The release workflow requires `docs/release-notes/<tag>.md` for the tag and publishes that file as the GitHub Release body.
 
-### Golden path before tagging
+### Proof before tagging
 
 Green tests have shipped bugs that only showed when the product was used (a pause that did not pause, seeding
 originals deleted, a file cleaned twice). So before a tag is made, the exact commit is installed on a clean machine
 and used the way a person uses it, and the release will not publish unless that run is on record. Decided by the owner,
 7 Oct 2026 (#903; Deluno's half is Deluno#1158, and the mechanism is the same in both).
 
-This holds for stable releases. A release candidate (`v1.0.0-rc.4`) is tagged as soon as CI passes on its commit:
-Weir is independent of Deluno, so a Weir fix ships at once and the real-data test keeps running on it. The rig's live test is its proof, and the golden path runs on the next stable release.
+On 11 Oct 2026 the owner made it stricter (#954, after nine rounds of release, prove, find and re-release): **a release
+is proven before its tag, with no waivers.** That holds for every `v*` tag, release candidates included. The
+pass-through for release candidates (#907) is gone: a `v1.0.0-rc.4` tag on a commit with no passing record fails the
+`golden-path` job and publishes nothing. The proof is automated, so it costs minutes rather than a session: Weir's scenario
+suite, run on the golden VM on the exact commit.
+
+#### The scenario suite
+
+`scripts/scenarios/Invoke-WeirScenarios.ps1` is the same shape as Deluno's `Invoke-GoldenPath.ps1` (PowerShell remoting to
+the Hyper-V host, PowerShell Direct into the VM, the same two credential files), so the Deluno session runs both suites in
+one VM round. It restores the clean checkpoint twice, once for each phase:
+
+```powershell
+./scripts/scenarios/Invoke-WeirScenarios.ps1 -RigHost <host> -InstallerPath .\weir-build\Weir-win-Setup.exe `
+  -Version 1.0.0-rc.14 -CommitSha <the 40-character SHA that will be tagged>
+```
+
+Add `-DelunoUrl http://<deluno>:7879 -DelunoApiKey <key>` to include the optional Deluno step, `-SourceFilm <path>` to hand
+over a real film (Big Buck Bunny, Creative Commons) instead of the one the run makes with Weir's own FFmpeg, and `-NoStatus` to
+keep the record without setting the status. `-WhatIf` lists the run and the scenarios and touches no machine. The previous
+release for the update phase is downloaded with `gh` (the newest published release older than `-Version`) unless
+`-PreviousInstallerPath` is given. `Run-WeirScenarios.ps1 -Plan` prints the scenarios alone.
+
+Each scenario drives the installed Weir through its real HTTP API and its real tray files (the pause request, the
+update-check and download flags, the pre-update copy request), with real media, and says what it does and what passes. The
+run keeps both apps' logs and writes `scenario-<version>-<sha>.md`, one line per scenario, in
+`artifacts/weir-scenarios-<version>-<short sha>/`, beside each scenario's evidence, Weir's server and tray logs, Deluno's logs
+when Deluno is installed, and the request log for Deluno's `/api/integrations/processors/events` (the reports Weir sent).
+
+| Phase | Scenario | What it proves |
+| --- | --- | --- |
+| Fresh | Fresh install | `Setup --silent` exits 0; the installed build reports the version and commit under test; the tray and server run; the server listens on this PC only; no window opens. |
+| Fresh | First visit and account creation | A brand-new Edge profile lands on account creation, then (once the account exists) on sign-in; neither ever says a session expired. |
+| Fresh | A film handed over | A film with three audio languages and two subtitle tracks is handed to the intake webhook; Weir keeps the video and the English audio, removes the rest, leaves the original and its `.nfo` alone, reports once to the manager, and releases its copy when the manager says it imported it. |
+| Fresh | A release with a small extra | The extra under the workflow's minimum size is skipped quietly, in place, unreported, and nothing needs the person. |
+| Fresh | A hand-off sent again | A resent hand-off, and a second id for the same download, are answered with the first completed report; nothing is cleaned twice; Activity says so. |
+| Fresh | Pause and resume from the tray | The tray's pause-request file pauses Weir; a hand-off during the pause waits with nothing cleaned, written or removed; the resume request runs it once; Activity shows both by the tray. |
+| Fresh | Process again | The answer is "Weir already cleaned this file, so it skipped it", Activity says "Skipped: already done", and no second output or job appears. |
+| Fresh | A deleted file that was waiting | A file deleted while Weir waits for it to settle becomes "no longer there", never a failure, with no warning in the log. |
+| Fresh | The update buttons | Check for updates and Download update reach the real tray, which takes each flag and brings the update state to an answer. |
+| Fresh | The copy saved before an update | The tray's backup request makes the running server save a consistent copy under `backups\pre-update`, and System overview names it. |
+| Fresh | Workflows set up from Deluno (optional) | With a Deluno given, Weir's workflows are linked to it with its folders and the folder chain is ready. Recorded not-applicable, and said so, with none. |
+| Fresh | Logs with no unexpected warnings | System > Logs, the server log and the tray log hold no warning or error the suite does not name as caused on purpose. |
+| Update | An update over the previous release | The previous release is installed and used, the build under test is installed over the running Weir, and Weir returns by itself on the new version with its account, workflow and Activity intact (and the pre-update copy when the database changed), then cleans a film. |
+
+The hand-off scenarios stand in for Deluno's side (`Start-StandInManager.ps1`): it answers the paths a Deluno connection
+needs, records every request, and makes no library of its own, so the run builds its own workflow over its own folders and
+links it to the connection. Deluno's real side is the golden path's own checklist.
+
+Every scenario is real or it is not there: a check that cannot fail is removed, an intermittent failure is a bug until its
+root cause is found (the owner, 11 Oct 2026), and a failure is fixed with a test that does what the scenario did.
 
 **1. Get the exact commit's build.** CI builds the Windows package for any commit without a tag and keeps it for
 7 days as the workflow artifact `weir-windows-<short sha>` (the first 7 characters of the commit), holding
@@ -105,33 +155,31 @@ Weir is independent of Deluno, so a Weir fix ships at once and the real-data tes
   `apps/server/Directory.Build.props`. Either way the artifact's name and its run's `headSha` tie it to the
   commit, and it is never published.
 
-**2. Run it on the clean VM.** The Deluno session drives the run on a Hyper-V Windows VM that is reverted to its
-saved clean checkpoint before every run, with Deluno's installer and this build's `Weir-win-Setup.exe` both built from
-the commit being tagged. The Weir session checks Weir's side through Weir's UI and read-only, against one shared
-checklist. The rig stays the long-running real-data box and is not the golden path.
+**2. Run it on the clean VM.** The scenario suite above runs on the Hyper-V Windows VM, which is reverted to its saved clean
+checkpoint before each phase, with this build's `Weir-win-Setup.exe` made from the commit being tagged. It runs unattended.
+The rig stays the long-running real-data box and is not the golden path.
 
-**3. The checklist.** [golden-path.md](golden-path.md) is the one checklist for both products, in run order,
-the same word for word in Deluno. Each line is checked by clicking or watching, and the evidence (what was seen,
-screenshots, log lines) goes in the filled checklist that the pass record points at.
+**3. The checklist.** [golden-path.md](golden-path.md) is the shared checklist for both products, the same word for word
+in Deluno, and the Deluno session still works through it on the same VM for Deluno's own gate. The scenarios automate
+the Weir lines of it (the real path through Weir, pause and repeats, Logs); what gates a Weir tag is the scenario record, not a
+ticked list.
 
-**4. Record the result.** Whoever drove the run sets a commit status named `golden-path` on the full SHA, with a
-description and a link to the evidence comment:
+**4. Record the result.** A full pass sets a commit status named `golden-path` on the full SHA, as
+`Invoke-WeirScenarios.ps1` does at the end of the run, with a link to the evidence:
 
 ```bash
-gh api repos/jampat000/Weir/statuses/<full sha> \
-  -f state=success -f context=golden-path \
-  -f description="Golden path passed on the clean VM, 8 of 8 checks" \
-  -f target_url="https://github.com/jampat000/Weir/issues/<n>#issuecomment-<id>"
+gh api repos/jampat000/Weir/statuses/<full sha>   -f state=success -f context=golden-path   -f description="Weir scenarios passed: 12 of 13 (1 optional not run), 1.0.0-rc.14+abc1234"   -f target_url="https://github.com/jampat000/Weir/issues/<n>#issuecomment-<id>"
 ```
 
-A run that fails is recorded the same way with `-f state=failure`. The newest status for the context is the one that
+A run that fails is recorded the same way with `state=failure`. The newest status for the context is the one that
 counts, so a later failure withdraws an earlier success. A status belongs to one commit: a fix made after a failed run
 is a new commit, and so is a commit that changes only the release notes, and each needs its own run on record.
 
 **5. The release checks it.** The `golden-path` job in `release.yml` (`scripts/verify-golden-path-for-release.mjs`)
-passes only when the tagged commit's newest `golden-path` status is `success`. It does not wait. Without one the
-release stops there, before anything is published, with: "This commit has no passing golden-path run. Run the golden
-path on this exact build (see docs/release.md), then re-run the release." Record the result, then re-run the
+passes only when the tagged commit's newest `golden-path` status is `success`, for a release candidate exactly as for a
+stable release. It does not wait, and nothing can skip it (`scripts/check-release-workflow-gates.mjs` refuses an `if:` on it).
+Without one the release stops there, before anything is published, with: "This commit has no passing golden-path run. Run
+Weir's scenario suite on this exact build (see docs/release.md), then re-run the release." Record the result, then re-run the
 release's failed jobs.
 
 ### Cutting a release candidate
@@ -198,10 +246,10 @@ The `Release` workflow:
   gh workflow run ci.yml --ref vX.Y.Z
   ```
 
-- **`golden-path`**: for a stable tag, confirms the golden path passed on the exact tagged commit (a release
-  candidate passes it at once): the newest commit status
-  with the context `golden-path` is `success` (`scripts/verify-golden-path-for-release.mjs`). It reads
-  statuses only and does not wait. See [Golden path before tagging](#golden-path-before-tagging).
+- **`golden-path`**: for every tag, release candidates included, confirms Weir's scenario suite passed on the exact tagged
+  commit: the newest commit status with the context `golden-path` is `success`
+  (`scripts/verify-golden-path-for-release.mjs`). It reads statuses only, does not wait, and cannot be skipped. See
+  [Proof before tagging](#proof-before-tagging).
 
 - **`validate`**: what CI cannot have checked. The release notes file exists, the release gate
   ordering holds, a NuGet vulnerability scan as of today, the E2E smoke, and the production web
